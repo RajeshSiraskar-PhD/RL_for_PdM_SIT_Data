@@ -1,6 +1,8 @@
 # 27-Jul-2025: First commit
 
+/__pycache__
 /storage
 /data
 /models
 /maintenance_tensorboard
+/Test_Runs
