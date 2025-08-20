@@ -1,8 +1,10 @@
 # 27-Jul-2025: First commit
+# 20-Aug-2025: First Objective-4 working version freeze
 
 /__pycache__
 /storage
 /data
+/Lab
 /models
 /maintenance_tensorboard
 /Test_Runs

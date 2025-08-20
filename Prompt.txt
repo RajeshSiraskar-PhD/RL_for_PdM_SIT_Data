@@ -1,0 +1,29 @@
+Gemini Pro 2.5 for code
+
+for Stable Baselines3 (SB3) 
+
+
+Features: time, Vib_Spindle, Vib_Table, Sound_Spindle, Sound_table, X_Load_Cell, Y_Load_Cell, Z_Load_Cell, Current, Spindle_Speed, Feed_Rate, Depth_of_Cut
+
+
+We are creating a reinforcement learning agent for the predictive maintenance of a milling machine. We replace the milling tool if its tool wear approaches the threshold 'WEAR_THRESHOLD'. Sensor data is provided as a .csv file like the one attached - shows the tool going through its life - from installed to crossing the wear threshold.
+
+Keep global variables for easy changes: DATA_FILE, Rewards R1, R2 and R3, WEAR_THRESHOLD (290), EPISODES (500), SMOOTH_WINDOW and any others. 
+
+Task-1:
+Create a custom environment 'MT_Env' based on OpenAI's Gymnasium. It is initiated using the data file, wear threshold and three reward parameters. The .csv attached file provides the state values through which the tool goes. 
+
+The agent is to be trained to provide actions: REPLACE_TOOL or CONTINUE. We must optimize tool life usage, but not cross WEAR THRESHOLD as it will result in poor quality work product. Use R1, R2, R3 for reward/penalty parameters that can be passed to the environment.
+
+Task-2:
+Create a REINFORCE algo implementation using Stable Baselines3 format - ensure that is state of the art and can beat a plain vanila PPO.
+
+Task-3:
+Compare the evaluation of this REINFORCE with the standard Stable Baselines3 PPO algo.
+
+Task-4:
+Plot 4 curves comparing REINFORCE and PPO: (1) learning curves (avg. episode rewards during the training) (2) total tool replacements made every episode (3) Threshold violations (4) Wear margins before replacements (lower is better, zero ideal). Smoothen the plots using SMOOTH_WINDOW parameter.
+
+If all this works - we are going to add Attention Mechanism! We will create another environment variant that uses the 8 sensor readings (Vib_Spindle to Current) and create attention weights and pass them along as State information and see if the REINFORCE performs even better than PPO working on the State * WITHOUT * attention weights!
+	
+	
