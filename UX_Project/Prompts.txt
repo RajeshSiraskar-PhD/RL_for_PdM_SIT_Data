@@ -1,0 +1,18 @@
+We will create a simple Streamlit app - with 2 colum layout.
+
+1. Title banner on the top "Reinforcement Learning for Predictive Maintenance".
+2. Two columns or panes: 30%-70%. Left column - Prussian blue RGB (0,49, 82) for and right pane in pale grey (hex F5,F5,F5)
+3. The left pane must be static with all the features and buttons
+4. The right pane must be scrollable for the graphs etc.
+5. Use neat straight lines for the areas and 11 size font for button
+6. I have the functionality ready as Python Notebook. I want this UI to visualize my work. It must by Python compatible.
+I should be able to swap the dummy functions mentioned below with my real functions
+9. Left pane 30% width has the following features:
+- Button "Select milling-data file": Browse button to open see files and open one. As soon as file opens - right pane shows the visualization.
+Use dummy function as placeholder Dummy_Visualization()
+Button. "Train a REINFORCE model": use the above traiing data file and train a save a model. Use dummy function as placeholder Dummy_REINFORCE().
+For now show progress bar below this button.
+- Button. "Train a REINFORCE model with Attention mechanism": Use dummy function as placeholder Dummy_REINFORCE_AM(). Add progress bar like above
+Button "Select milling-data file for evaluation". Load evaluation file and show visualzaiton using samee function Dummy_Visualization()
+Button "Evaluate Test pre-trained model". Allow pickgin the saved model and run Dummy_Evaluate().
+Will evaluate and show performance metrics and visualization plots in the right pane
