@@ -1,0 +1,859 @@
+"""
+Reinforcement Learning for Predictive Maintenance - Standalone Module
+Version: 2.0 | Date: 14-Dec-2025
+
+This module contains all the necessary classes, functions, and utilities for:
+- Training REINFORCE, PPO, and REINFORCE+Attention agents
+- Evaluating trained models on test data
+- Plotting training metrics and results
+- Managing milling machine environments
+
+Can be imported into Streamlit or other applications.
+"""
+
+import warnings
+import logging
+import os
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.distributions import Categorical
+
+import gymnasium as gym
+from gymnasium import spaces
+from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.monitor import Monitor
+
+import matplotlib.pyplot as plt
+from typing import Dict, List, Tuple, Any
+from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
+from sklearn.kernel_ridge import KernelRidge
+
+# ==========================================
+# SUPPRESS WARNINGS
+# ==========================================
+warnings.filterwarnings("ignore")
+os.environ["PYTHONWARNINGS"] = "ignore"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+logging.getLogger().setLevel(logging.ERROR)
+logging.getLogger("matplotlib").setLevel(logging.ERROR)
+logging.getLogger("sklearn").setLevel(logging.ERROR)
+np.seterr(all="ignore")
+
+# ==========================================
+# CONFIGURATION
+# ==========================================
+class Config:
+    """Configuration parameters for RL training and evaluation."""
+    
+    # Data and Model Paths
+    SENSOR_DATA: str = 'PROC_9'
+    DATA_FILE: str = f'data/{SENSOR_DATA}.csv'
+    
+    # Reward Configuration
+    R1_CONTINUE: float = 1.0                    # Base reward for continuing
+    R2_REPLACE: float = 5.0                     # Penalty weight for unused life
+    R3_VIOLATION: float = 50.0                  # Large penalty for crossing threshold
+    AMR: float = 5e-2                           # Advantage Mixing Ratio for Attention
+    
+    # Training Configuration
+    WEAR_THRESHOLD: float = 290.0               # Wear threshold
+    EPISODES: int = 50                          # Training episodes
+    LEARNING_RATE: float = 1e-2                 # Learning rate for optimizers
+    GAMMA: float = 0.99                         # Discount factor
+    SMOOTH_WINDOW: int = 50                     # Window size for smoothing plots
+    
+    # Model Saving
+    SAVE_MODEL: bool = True
+    REINFORCE_MODEL: str = f'models/{SENSOR_DATA}_REINFORCE_Model_{EPISODES}.h5'
+    REINFORCE_AM_MODEL: str = f'models/{SENSOR_DATA}_REINFORCE_AM_Model_{EPISODES}.h5'
+    PPO_MODEL: str = f'models/{SENSOR_DATA}_PPO_Model_{EPISODES}.zip'
+
+# ==========================================
+# ENVIRONMENTS
+# ==========================================
+class MT_Env(gym.Env):
+    """
+    Milling Tool Environment for RL training.
+    Actions: CONTINUE (0), REPLACE_TOOL (1)
+    """
+    
+    metadata = {"render_modes": ["human"], "render_fps": 4}
+    
+    def __init__(
+        self,
+        data_file: str = Config.DATA_FILE,
+        wear_threshold: float = Config.WEAR_THRESHOLD,
+        r1: float = Config.R1_CONTINUE,
+        r2: float = Config.R2_REPLACE,
+        r3: float = Config.R3_VIOLATION
+    ):
+        super().__init__()
+        self.data_file = data_file
+        self.df = pd.read_csv(self.data_file)
+        
+        # Validate required columns
+        required_cols = [
+            "Time", "Vib_Spindle", "Vib_Table", "Sound_Spindle", "Sound_table",
+            "X_Load_Cell", "Y_Load_Cell", "Z_Load_Cell", "Current", "tool_wear"
+        ]
+        for c in required_cols:
+            if c not in self.df.columns:
+                raise ValueError(f"Missing required column in data file: {c}")
+        
+        self.tool_wear_series = pd.to_numeric(self.df["tool_wear"], errors="coerce").to_numpy()
+        if np.any(np.isnan(self.tool_wear_series)):
+            raise ValueError("Non-numeric or missing values found in 'tool_wear' column.")
+        
+        # Feature compatibility with Attention Environment
+        self.features = [
+            'Vib_Spindle', 'Vib_Table', 'Sound_Spindle', 'Sound_table',
+            'X_Load_Cell', 'Y_Load_Cell', 'Z_Load_Cell', 'Current'
+        ]
+        
+        missing = [f for f in self.features if f not in self.df.columns]
+        if missing:
+            raise ValueError(f"Missing features in dataset: {missing}")
+        
+        # Compute per-feature normalization stats
+        vals_df = self.df[self.features].astype(np.float32)
+        self.feature_means = vals_df.mean(axis=0).to_numpy(dtype=np.float32)
+        self.feature_stds = vals_df.std(axis=0).replace(0, 1.0).to_numpy(dtype=np.float32)
+        self.attention_weights = np.ones(len(self.features), dtype=np.float32)
+        
+        # Configuration
+        self.wear_threshold = float(wear_threshold)
+        self.r1 = float(r1)
+        self.r2 = float(r2)
+        self.r3 = float(r3)
+        
+        # Gym spaces
+        obs_low = np.full((8,), -np.finfo(np.float32).max, dtype=np.float32)
+        obs_high = np.full((8,), np.finfo(np.float32).max, dtype=np.float32)
+        self.observation_space = spaces.Box(low=obs_low, high=obs_high, dtype=np.float32)
+        self.action_space = spaces.Discrete(2)
+        
+        # State tracking
+        self.current_idx = 0
+        self.done = False
+        self._last_terminal_margin = np.nan
+    
+    def _get_observation(self, idx: int) -> np.ndarray:
+        """Get observation (sensor features) at index."""
+        row = self.df.iloc[idx]
+        sensors = np.array([
+            row["Vib_Spindle"], row["Vib_Table"], row["Sound_Spindle"], row["Sound_table"],
+            row["X_Load_Cell"], row["Y_Load_Cell"], row["Z_Load_Cell"], row["Current"]
+        ], dtype=np.float32)
+        return sensors
+    
+    def _get_tool_wear(self, idx: int) -> float:
+        """Get tool wear value at index."""
+        return float(self.tool_wear_series[idx])
+    
+    def _compute_margin(self, idx: int) -> float:
+        """Compute wear margin (threshold - wear)."""
+        wear = self._get_tool_wear(idx)
+        return float(self.wear_threshold - wear)
+    
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict]:
+        """Execute one step of the environment."""
+        if self.done:
+            obs = self._get_observation(min(self.current_idx, len(self.df)-1))
+            info = {
+                'violation': bool(self._get_tool_wear(self.current_idx) >= self.wear_threshold),
+                'replacement': False,
+                'margin': float(self._last_terminal_margin) if not np.isnan(self._last_terminal_margin) else float(self.wear_threshold - self._get_tool_wear(self.current_idx))
+            }
+            return obs, 0.0, True, False, info
+        
+        if action not in (0, 1):
+            raise ValueError("Invalid action.")
+        
+        tool_wear = self._get_tool_wear(self.current_idx)
+        reward = 0.0
+        info = {'violation': False, 'replacement': False, 'margin': np.nan}
+        
+        if action == 0:  # CONTINUE
+            if tool_wear >= self.wear_threshold:
+                reward = -self.r3
+                self.done = True
+                info['violation'] = True
+                info['margin'] = self._compute_margin(self.current_idx)
+                self._last_terminal_margin = info['margin']
+                obs = self._get_observation(self.current_idx)
+                return obs, float(reward), True, False, info
+            else:
+                reward = self.r1
+                if self.current_idx + 1 < len(self.df):
+                    self.current_idx += 1
+                    obs = self._get_observation(self.current_idx)
+                    return obs, float(reward), False, False, info
+                else:
+                    self.done = True
+                    info['margin'] = self._compute_margin(self.current_idx)
+                    self._last_terminal_margin = info['margin']
+                    obs = self._get_observation(self.current_idx)
+                    return obs, float(reward), True, False, info
+        
+        else:  # REPLACE_TOOL (action == 1)
+            info['replacement'] = True
+            info['margin'] = self._compute_margin(self.current_idx)
+            if tool_wear >= self.wear_threshold:
+                reward = -self.r3
+                info['violation'] = True
+            else:
+                used_fraction = np.clip(tool_wear / self.wear_threshold, 0.0, 1.0)
+                unused_fraction = 1.0 - used_fraction
+                reward = self.r1 * used_fraction - self.r2 * unused_fraction
+                info['violation'] = False
+            self.done = True
+            self._last_terminal_margin = info['margin']
+            obs = self._get_observation(self.current_idx)
+            return obs, float(reward), True, False, info
+    
+    def reset(self, *, seed=None, options=None):
+        """Reset the environment."""
+        super().reset(seed=seed)
+        self.current_idx = 0
+        self.done = False
+        self._last_terminal_margin = np.nan
+        obs = self._get_observation(self.current_idx)
+        info = {'violation': False, 'replacement': False, 'margin': np.nan}
+        return obs, info
+    
+    def render(self, mode="human"):
+        """Render environment state."""
+        if self.done:
+            print(f"[MT-Env] done. idx={self.current_idx}, margin={self._last_terminal_margin}")
+        else:
+            wear_val = self._get_tool_wear(self.current_idx)
+            print(f"[MT-Env] idx={self.current_idx}, tool_wear={wear_val:.3f}")
+    
+    def close(self):
+        """Close environment."""
+        pass
+
+
+class AM_Env(MT_Env):
+    """
+    Attention-augmented variant of MT_Env.
+    Uses kernel ridge regression to compute attention weights based on feature-to-wear relationships.
+    """
+    
+    def __init__(
+        self,
+        data_file: str = Config.DATA_FILE,
+        wear_threshold: float = Config.WEAR_THRESHOLD,
+        r1: float = Config.R1_CONTINUE,
+        r2: float = Config.R2_REPLACE,
+        r3: float = Config.R3_VIOLATION,
+        kr_alpha: float = 1.0
+    ):
+        super().__init__(data_file, wear_threshold, r1, r2, r3)
+        
+        # Prepare training data for KernelRidge
+        vals_df = self.df[self.features].astype(np.float32)
+        X = ((vals_df - self.feature_means) / (self.feature_stds + 1e-9)).to_numpy(dtype=np.float32)
+        y = self.df['tool_wear'].to_numpy(dtype=np.float32)
+        
+        # Fit KernelRidge to estimate feature importances
+        self._kr_model = KernelRidge(kernel='linear', alpha=kr_alpha)
+        self._kr_model.fit(X, y)
+        
+        # Compute attention weights from primal coefficients
+        dual = np.asarray(self._kr_model.dual_coef_).reshape(-1, 1)
+        x_fit = np.asarray(self._kr_model.x_fit_)
+        coef = (x_fit.T @ dual).ravel()
+        
+        attn = np.abs(coef)
+        if attn.sum() == 0:
+            attn = np.ones_like(attn)
+        attn = attn / (attn.sum() + 1e-12)
+        self.attention_weights = attn.astype(np.float32)
+        
+        # Update observation space
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(len(self.features),), dtype=np.float32
+        )
+    
+    def get_observation(self) -> np.ndarray:
+        """Return attention-weighted, normalized feature vector."""
+        vals = self.df.loc[self.current_idx, self.features].to_numpy(dtype=np.float32)
+        norm = (vals - self.feature_means) / (self.feature_stds + 1e-9)
+        weighted = norm * self.attention_weights
+        return weighted.astype(np.float32)
+    
+    def recompute_attention(self, window: int = None, kr_alpha: float = None):
+        """Recompute attention weights optionally using a sliding window."""
+        if window is None:
+            df_slice = self.df[self.features]
+        else:
+            start = max(0, self.current_idx - window + 1)
+            df_slice = self.df.loc[start:self.current_idx, self.features]
+            if len(df_slice) < 2:
+                df_slice = self.df[self.features]
+        
+        X = ((df_slice - self.feature_means) / (self.feature_stds + 1e-9)).to_numpy(dtype=np.float32)
+        y = self.df.loc[df_slice.index, 'tool_wear'].to_numpy(dtype=np.float32)
+        
+        model = KernelRidge(kernel='linear', alpha=(kr_alpha if kr_alpha is not None else self._kr_model.alpha))
+        model.fit(X, y)
+        
+        dual = np.asarray(model.dual_coef_).reshape(-1, 1)
+        x_fit = np.asarray(model.x_fit_)
+        coef = (x_fit.T @ dual).ravel()
+        
+        attn = np.abs(coef)
+        if attn.sum() == 0:
+            attn = np.ones_like(attn)
+        attn = attn / (attn.sum() + 1e-12)
+        self.attention_weights = attn.astype(np.float32)
+
+# ==========================================
+# NEURAL NETWORK POLICY
+# ==========================================
+class PolicyNetwork(nn.Module):
+    """Policy network for REINFORCE agents."""
+    
+    def __init__(self, input_dim: int, output_dim: int):
+        super(PolicyNetwork, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Linear(64, output_dim),
+            nn.Softmax(dim=-1)
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 1:
+            x = x.unsqueeze(0)
+        return self.net(x)
+
+# ==========================================
+# REINFORCE AGENT
+# ==========================================
+class REINFORCE:
+    """Custom REINFORCE agent implementation."""
+    
+    def __init__(
+        self,
+        policy: PolicyNetwork,
+        env: gym.Env,
+        learning_rate: float = 0.001,
+        gamma: float = 0.99,
+        model_file: str = None
+    ):
+        self.env = env
+        self.policy = policy
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
+        self.gamma = gamma
+        self.model_name = "REINFORCE"
+        self.model_file = model_file
+    
+    def predict(self, obs: np.ndarray) -> int:
+        """Select action based on observation."""
+        with torch.no_grad():
+            state_tensor = torch.FloatTensor(obs).unsqueeze(0)
+            probs = self.policy(state_tensor)
+            dist = Categorical(probs)
+            action = dist.sample()
+            return action.item()
+    
+    def learn(self, total_episodes: int) -> Dict[str, List]:
+        """Train the agent for given number of episodes."""
+        print(f"--- Training {self.model_name} ---")
+        
+        all_rewards = []
+        all_violations = []
+        all_replacements = []
+        all_margins = []
+        
+        for episode in range(total_episodes):
+            log_probs = []
+            rewards = []
+            obs, _ = self.env.reset()
+            done = False
+            
+            episode_info = {'violation': 0, 'replacement': 0, 'margin': np.nan}
+            
+            while not done:
+                state_tensor = torch.FloatTensor(obs).unsqueeze(0)
+                probs = self.policy(state_tensor)
+                dist = Categorical(probs)
+                action = dist.sample()
+                
+                log_prob = dist.log_prob(action)
+                log_probs.append(log_prob)
+                
+                obs, reward, terminated, truncated, info = self.env.step(action.item())
+                rewards.append(reward)
+                done = terminated or truncated
+                
+                if info.get('violation'):
+                    episode_info['violation'] = 1
+                if info.get('replacement'):
+                    episode_info['replacement'] = 1
+                if not np.isnan(info.get('margin')):
+                    episode_info['margin'] = info.get('margin')
+            
+            # Collect metrics
+            all_rewards.append(sum(rewards))
+            all_violations.append(episode_info['violation'])
+            all_replacements.append(episode_info['replacement'])
+            all_margins.append(episode_info['margin'])
+            
+            # Calculate discounted returns
+            returns = []
+            G = 0
+            for r in reversed(rewards):
+                G = r + self.gamma * G
+                returns.insert(0, G)
+            returns = torch.tensor(returns, dtype=torch.float32)
+            
+            if len(returns) > 1:
+                returns = (returns - returns.mean()) / (returns.std() + 1e-9)
+            
+            # Update policy
+            policy_loss = []
+            for log_prob, G in zip(log_probs, returns):
+                policy_loss.append(-log_prob * G)
+            
+            self.optimizer.zero_grad()
+            policy_loss = torch.cat(policy_loss).sum()
+            policy_loss.backward()
+            self.optimizer.step()
+            
+            if (episode + 1) % 50 == 0:
+                print(f"Episode {episode + 1}/{total_episodes}, Reward: {sum(rewards):.2f}")
+        
+        print("--- Training Complete ---")
+        
+        # Save model if provided
+        if self.model_file is not None:
+            try:
+                os.makedirs(os.path.dirname(self.model_file), exist_ok=True)
+                torch.save({
+                    'policy_state_dict': self.policy.state_dict(),
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                    'input_dim': self.policy.net[0].in_features,
+                    'output_dim': self.policy.net[-2].out_features
+                }, self.model_file)
+                print(f"Model saved to: {self.model_file}")
+            except Exception as e:
+                print(f"Error saving model: {str(e)}")
+        
+        return {
+            "rewards": all_rewards,
+            "violations": all_violations,
+            "replacements": all_replacements,
+            "margins": all_margins
+        }
+
+# ==========================================
+# PPO TRAINING
+# ==========================================
+class MetricsCallback(BaseCallback):
+    """Callback for collecting metrics during PPO training."""
+    
+    def __init__(self, verbose=0):
+        super(MetricsCallback, self).__init__(verbose)
+        self.rewards = []
+        self.violations = []
+        self.replacements = []
+        self.margins = []
+    
+    def _on_step(self) -> bool:
+        if self.locals['dones'][0]:
+            info = self.locals['infos'][0]
+            self.rewards.append(info['episode']['r'])
+            self.violations.append(1 if info.get('violation') else 0)
+            self.replacements.append(1 if info.get('replacement') else 0)
+            self.margins.append(info.get('margin', np.nan))
+        return True
+
+
+def train_ppo(
+    env: gym.Env,
+    total_episodes: int,
+    learning_rate: float = Config.LEARNING_RATE,
+    gamma: float = Config.GAMMA,
+    model_file: str = None
+) -> Dict[str, List]:
+    """Train a PPO agent and collect metrics."""
+    print("--- Training PPO ---")
+    callback = MetricsCallback()
+    
+    model = PPO("MlpPolicy", env, verbose=0, learning_rate=learning_rate, gamma=gamma)
+    
+    obs, _ = env.reset()
+    ep_count = 0
+    while ep_count < total_episodes:
+        action, _states = model.predict(obs, deterministic=False)
+        obs, reward, terminated, truncated, info = env.step(action)
+        
+        callback.model = model
+        callback.locals = {'dones': [terminated or truncated], 'infos': [info]}
+        callback._on_step()
+        
+        if terminated or truncated:
+            ep_count += 1
+            if (ep_count) % 50 == 0:
+                print(f"Episode {ep_count}/{total_episodes}")
+            obs, _ = env.reset()
+    
+    print("--- Training Complete ---")
+    
+    if model_file is not None:
+        try:
+            os.makedirs(os.path.dirname(model_file), exist_ok=True)
+            model.save(model_file)
+            print(f"PPO model saved to: {model_file}")
+        except Exception as e:
+            print(f"Error saving PPO model: {str(e)}")
+    
+    return {
+        "rewards": callback.rewards,
+        "violations": callback.violations,
+        "replacements": callback.replacements,
+        "margins": callback.margins
+    }
+
+# ==========================================
+# UTILITY FUNCTIONS
+# ==========================================
+def smooth(data: List[float], window_size: int) -> np.ndarray:
+    """Apply moving average smoothing."""
+    return pd.Series(data).rolling(window=window_size, min_periods=1).mean().to_numpy()
+
+
+def average_metrics(
+    metrics_a: Dict[str, List],
+    metrics_b: Dict[str, List],
+    name_a: str = None,
+    name_b: str = None,
+    leave_first_N: int = 0
+) -> Dict[str, Dict[str, float]]:
+    """Compute averaged metrics for two algorithms."""
+    
+    N = max(0, int(leave_first_N))
+    
+    if name_a is None:
+        import inspect
+        calling_frame = inspect.currentframe().f_back
+        name_a = next((n for n, v in calling_frame.f_locals.items() if v is metrics_a), "Algorithm_A")
+    if name_b is None:
+        import inspect
+        calling_frame = inspect.currentframe().f_back
+        name_b = next((n for n, v in calling_frame.f_locals.items() if v is metrics_b), "Algorithm_B")
+    
+    def safe_avg(seq):
+        try:
+            arr = np.asarray(seq, dtype=float)
+        except Exception:
+            return float("nan")
+        sliced = arr[N:]
+        if sliced.size == 0:
+            return float("nan")
+        return float(np.nanmean(sliced))
+    
+    metrics = {
+        name_a: {
+            'avg_reward': safe_avg(metrics_a.get('rewards', [])),
+            'avg_violations': safe_avg(metrics_a.get('violations', [])),
+            'avg_replacements': safe_avg(metrics_a.get('replacements', [])),
+            'avg_margin': safe_avg(metrics_a.get('margins', []))
+        },
+        name_b: {
+            'avg_reward': safe_avg(metrics_b.get('rewards', [])),
+            'avg_violations': safe_avg(metrics_b.get('violations', [])),
+            'avg_replacements': safe_avg(metrics_b.get('replacements', [])),
+            'avg_margin': safe_avg(metrics_b.get('margins', []))
+        }
+    }
+    
+    # Print formatted table
+    print(f'\nAverage Metrics Comparison {"(Steady state)" if N > 0 else ""}')
+    print("-" * 64)
+    print(f"{'Metric':<20} {name_a:>18} {name_b:>18}")
+    print("-" * 64)
+    
+    metrics_names = {
+        'avg_reward': 'Average Reward',
+        'avg_violations': 'Violation Rate',
+        'avg_replacements': 'Replacement Rate',
+        'avg_margin': 'Average Margin'
+    }
+    
+    for metric in metrics_names:
+        a_val = metrics[name_a][metric]
+        b_val = metrics[name_b][metric]
+        a_str = f"{a_val:>18.4f}" if not np.isnan(a_val) else f"{'nan':>18}"
+        b_str = f"{b_val:>18.4f}" if not np.isnan(b_val) else f"{'nan':>18}"
+        print(f"{metrics_names[metric]:<20} {a_str} {b_str}")
+    
+    print("-" * 64)
+    
+    return metrics
+
+# ==========================================
+# PLOTTING FUNCTIONS
+# ==========================================
+def plot_metrics(
+    metrics_a: Dict[str, List],
+    metrics_b: Dict[str, List],
+    name_a: str = "Algorithm A",
+    name_b: str = "Algorithm B",
+    window: int = Config.SMOOTH_WINDOW,
+    mode: str = "COMBINED"
+) -> None:
+    """Plot training metrics comparison."""
+    
+    W, H = 16, 6
+    FONTSIZE_SUPER = 18
+    FONTSIZE_TITLE = 12
+    FONTSIZE_LABEL = 10
+    FONTSIZE_TICK = 9
+    BACKGROUND_COLOR = '#f8f8f8'
+    
+    def setup_subplot(ax, title, xlabel, ylabel):
+        ax.set_title(title, fontsize=FONTSIZE_TITLE)
+        ax.set_xlabel(xlabel, fontsize=FONTSIZE_LABEL)
+        ax.set_ylabel(ylabel, fontsize=FONTSIZE_LABEL)
+        ax.tick_params(labelsize=FONTSIZE_TICK)
+        ax.grid(True, linestyle='--', alpha=0.6)
+        ax.set_facecolor(BACKGROUND_COLOR)
+    
+    if mode.upper() == "COMBINED":
+        fig, axs = plt.subplots(2, 2, figsize=(W, H))
+        fig.suptitle(f'{name_a} vs. {name_b} Performance Comparison', fontsize=FONTSIZE_SUPER)
+        
+        metrics_config = [
+            {'data': 'rewards', 'title': 'Learning Curve (Smoothed Average Reward)', 'ylabel': 'Average Reward'},
+            {'data': 'replacements', 'title': 'Replacements per episode (Smoothed)', 'ylabel': 'Replacement Rate'},
+            {'data': 'violations', 'title': 'Threshold Violations per episode (Smoothed)', 'ylabel': 'Violation Rate'},
+            {'data': 'margins', 'title': 'Wear Margin Before Replacement (Smoothed)', 'ylabel': 'Wear Margin'}
+        ]
+        
+        for idx, config in enumerate(metrics_config):
+            ax = axs[idx // 2, idx % 2]
+            if config['data'] == 'margins':
+                a_data = pd.Series(metrics_a[config['data']]).rolling(window, min_periods=1).mean()
+                b_data = pd.Series(metrics_b[config['data']]).rolling(window, min_periods=1).mean()
+            else:
+                a_data = smooth(metrics_a[config['data']], window)
+                b_data = smooth(metrics_b[config['data']], window)
+            
+            ax.plot(a_data, label=name_a, alpha=0.6)
+            ax.plot(b_data, label=name_b, alpha=0.6)
+            setup_subplot(ax, config['title'], 'Episode', config['ylabel'])
+            ax.legend()
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
+
+
+def plot_single_metrics(
+    metrics: Dict[str, List],
+    name: str = "Algorithm",
+    window: int = Config.SMOOTH_WINDOW
+) -> None:
+    """Plot training metrics for a single algorithm."""
+    
+    W, H = 16, 6
+    FONTSIZE_SUPER = 18
+    FONTSIZE_TITLE = 12
+    FONTSIZE_LABEL = 10
+    FONTSIZE_TICK = 9
+    BACKGROUND_COLOR = '#f8f8f8'
+    
+    def setup_subplot(ax, title, xlabel, ylabel):
+        ax.set_title(title, fontsize=FONTSIZE_TITLE)
+        ax.set_xlabel(xlabel, fontsize=FONTSIZE_LABEL)
+        ax.set_ylabel(ylabel, fontsize=FONTSIZE_LABEL)
+        ax.tick_params(labelsize=FONTSIZE_TICK)
+        ax.grid(True, linestyle='--', alpha=0.6)
+        ax.set_facecolor(BACKGROUND_COLOR)
+    
+    fig, axs = plt.subplots(2, 2, figsize=(W, H))
+    fig.suptitle(f'{name} Training Performance', fontsize=FONTSIZE_SUPER)
+    
+    metrics_config = [
+        {'data': 'rewards', 'title': 'Learning Curve (Smoothed Average Reward)', 'ylabel': 'Average Reward', 'color': 'blue'},
+        {'data': 'replacements', 'title': 'Replacements per episode (Smoothed)', 'ylabel': 'Replacement Rate', 'color': 'green'},
+        {'data': 'violations', 'title': 'Threshold Violations per episode (Smoothed)', 'ylabel': 'Violation Rate', 'color': 'red'},
+        {'data': 'margins', 'title': 'Wear Margin Before Replacement (Smoothed)', 'ylabel': 'Wear Margin', 'color': 'purple'}
+    ]
+    
+    for idx, config in enumerate(metrics_config):
+        ax = axs[idx // 2, idx % 2]
+        if config['data'] == 'margins':
+            data = pd.Series(metrics[config['data']]).rolling(window, min_periods=1).mean()
+        else:
+            data = smooth(metrics[config['data']], window)
+        
+        ax.plot(data, color=config['color'], alpha=0.6)
+        setup_subplot(ax, config['title'], 'Episode', config['ylabel'])
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
+
+# ==========================================
+# EVALUATION FUNCTIONS
+# ==========================================
+def test_models_on_timeseries(
+    test_file: str,
+    wear_threshold: float = Config.WEAR_THRESHOLD,
+    ppo_model_file: str = Config.PPO_MODEL,
+    reinforce_model_file: str = Config.REINFORCE_MODEL,
+    reinforce_am_model_file: str = Config.REINFORCE_AM_MODEL,
+) -> pd.DataFrame:
+    """
+    Evaluate three models on a test time series.
+    Returns DataFrame with precision, recall, f1, accuracy, and avg_margin.
+    """
+    
+    # Load test file
+    df = pd.read_csv(test_file)
+    
+    # Find action column
+    action_col = None
+    for c in ("ACTION", "ACTION_CODE", "action", "action_code"):
+        if c in df.columns:
+            action_col = c
+            break
+    if action_col is None:
+        raise ValueError("Test file must contain ACTION or ACTION_CODE column.")
+    
+    y_true = df[action_col].astype(int).to_numpy()
+    n = len(df)
+    
+    # Create environments
+    mt_env = MT_Env(data_file=test_file, wear_threshold=wear_threshold)
+    try:
+        am_env = AM_Env(data_file=test_file, wear_threshold=wear_threshold)
+        has_am = True
+    except Exception:
+        am_env = None
+        has_am = False
+    
+    results = {}
+    
+    # Test PPO
+    try:
+        ppo_agent = PPO.load(ppo_model_file, device="cpu")
+        ppo_preds = []
+        for i in range(n):
+            obs = mt_env._get_observation(i)
+            action, _ = ppo_agent.predict(obs, deterministic=True)
+            ppo_preds.append(int(action))
+    except Exception as e:
+        print(f"Error loading/running PPO: {e}")
+        ppo_preds = [np.nan] * n
+    
+    # Test REINFORCE
+    try:
+        ckpt = torch.load(reinforce_model_file, map_location="cpu")
+        policy_rf = PolicyNetwork(mt_env.observation_space.shape[0], mt_env.action_space.n)
+        if isinstance(ckpt, dict) and "policy_state_dict" in ckpt:
+            policy_rf.load_state_dict(ckpt["policy_state_dict"])
+        else:
+            policy_rf.load_state_dict(ckpt)
+        policy_rf.eval()
+        rf_preds = []
+        for i in range(n):
+            obs = mt_env._get_observation(i)
+            with torch.no_grad():
+                t = torch.FloatTensor(obs).unsqueeze(0)
+                probs = policy_rf(t).squeeze(0).cpu().numpy()
+                rf_preds.append(int(np.argmax(probs)))
+    except Exception as e:
+        print(f"Error loading/running REINFORCE: {e}")
+        rf_preds = [np.nan] * n
+    
+    # Test REINFORCE with Attention
+    try:
+        ckpt_am = torch.load(reinforce_am_model_file, map_location="cpu")
+        if has_am and am_env is not None:
+            policy_am = PolicyNetwork(am_env.observation_space.shape[0], am_env.action_space.n)
+            if isinstance(ckpt_am, dict) and "policy_state_dict" in ckpt_am:
+                policy_am.load_state_dict(ckpt_am["policy_state_dict"])
+            else:
+                policy_am.load_state_dict(ckpt_am)
+            policy_am.eval()
+            rf_am_preds = []
+            for i in range(n):
+                am_env.current_idx = i
+                obs = am_env.get_observation()
+                with torch.no_grad():
+                    t = torch.FloatTensor(obs).unsqueeze(0)
+                    probs = policy_am(t).squeeze(0).cpu().numpy()
+                    rf_am_preds.append(int(np.argmax(probs)))
+        else:
+            raise RuntimeError("AM_Env unavailable or failed to initialize.")
+    except Exception as e:
+        print(f"Error loading/running REINFORCE+AM: {e}")
+        rf_am_preds = [np.nan] * n
+    
+    # Helper to compute metrics
+    def compute_metrics(y_true, y_pred):
+        y_true = np.asarray(y_true, dtype=int)
+        y_pred = np.asarray(y_pred)
+        mask = ~np.isnan(y_pred)
+        if mask.sum() == 0:
+            return {
+                "precision": np.nan, "recall": np.nan, "f1": np.nan,
+                "accuracy": np.nan, "avg_margin": np.nan
+            }
+        y_pred = y_pred[mask].astype(int)
+        y_true2 = y_true[mask]
+        
+        precision = precision_score(y_true2, y_pred, zero_division=0)
+        recall = recall_score(y_true2, y_pred, zero_division=0)
+        f1 = f1_score(y_true2, y_pred, zero_division=0)
+        acc = accuracy_score(y_true2, y_pred)
+        
+        # Compute average margin at replacements
+        replace_idx = np.where(y_pred == 1)[0]
+        if replace_idx.size:
+            orig_indices = np.flatnonzero(mask)[replace_idx]
+            margins = (wear_threshold - df.loc[orig_indices, "tool_wear"].astype(float)).to_numpy()
+            avg_margin = float(np.nanmean(margins)) if margins.size else float("nan")
+        else:
+            avg_margin = float("nan")
+        
+        return {
+            "precision": float(precision),
+            "recall": float(recall),
+            "f1": float(f1),
+            "accuracy": float(acc),
+            "avg_margin": avg_margin
+        }
+    
+    # Compute metrics for all models
+    metrics_ppo = compute_metrics(y_true, ppo_preds)
+    metrics_rf = compute_metrics(y_true, rf_preds)
+    metrics_rf_am = compute_metrics(y_true, rf_am_preds)
+    
+    # Build results DataFrame
+    df_out = pd.DataFrame.from_dict({
+        "PPO": metrics_ppo,
+        "REINFORCE": metrics_rf,
+        "REINFORCE_AM": metrics_rf_am
+    }, orient="index")[["precision", "recall", "f1", "accuracy", "avg_margin"]]
+    
+    print("\nModel Classification Metrics (predicted vs ground-truth ACTION):")
+    print(df_out.round(4))
+    
+    return df_out
