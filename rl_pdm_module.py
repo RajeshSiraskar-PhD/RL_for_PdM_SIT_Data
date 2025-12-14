@@ -380,6 +380,11 @@ class REINFORCE:
         all_replacements = []
         all_margins = []
         
+        # Set up training progress bar
+        import streamlit as st
+        progress_text = "Training the REINFORCE model ..."
+        training_progress_bar = st.progress(0, text=progress_text)
+        
         for episode in range(total_episodes):
             log_probs = []
             rewards = []
@@ -434,11 +439,17 @@ class REINFORCE:
             policy_loss = torch.cat(policy_loss).sum()
             policy_loss.backward()
             self.optimizer.step()
-            
-            if (episode + 1) % 50 == 0:
-                print(f"Episode {episode + 1}/{total_episodes}, Reward: {sum(rewards):.2f}")
+                        
+            if (episode + 1) % 10 == 0:
+                progress_text = f"Episode {episode + 1}/{total_episodes}, Reward: {sum(rewards):.2f}"
+                # print(progress_text)
+                # Initialize the progress bar
+                training_progress_bar.progress(episode+1, text=progress_text)  
         
         print("--- Training Complete ---")
+        # Clear the progress bar after completion (optional)
+        training_progress_bar.empty()
+        st.success("Training complete")
         
         # Save model if provided
         if self.model_file is not None:
