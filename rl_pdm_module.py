@@ -815,7 +815,8 @@ def plot_reinforce_training_live(
             'title': 'Cumulative Reward per Episode',
             'ylabel': 'Reward',
             'color': '#1f77b4',
-            'smooth': True
+            'smooth': True,
+            'trend': True
         },
         {
             'data': 'violations',
@@ -823,7 +824,8 @@ def plot_reinforce_training_live(
             'title': 'Violations per Episode',
             'ylabel': 'Violation Count',
             'color': '#d62728',
-            'smooth': False
+            'smooth': False,
+            'trend': False
         },
         {
             'data': 'replacements',
@@ -831,7 +833,8 @@ def plot_reinforce_training_live(
             'title': 'Replacements per Episode',
             'ylabel': 'Replacement Count',
             'color': '#2ca02c',
-            'smooth': False
+            'smooth': False,
+            'trend': False
         },
         {
             'data': 'margins',
@@ -839,7 +842,8 @@ def plot_reinforce_training_live(
             'title': 'Wear Margin at Replacement',
             'ylabel': 'Margin Value',
             'color': '#9467bd',
-            'smooth': True
+            'smooth': True,
+            'trend': True
         }
     ]
     
@@ -872,7 +876,7 @@ def plot_reinforce_training_live(
             )
             
             # Add trend line if enough data
-            if len(data) > 3:
+            if config['trend'] and len(data) > 3:
                 z = np.polyfit(episodes_range, smooth_data, 2)
                 p = np.poly1d(z)
                 ax.plot(
@@ -881,7 +885,7 @@ def plot_reinforce_training_live(
                     color=config['color'],
                     linestyle='--',
                     alpha=0.3,
-                    linewidth=1.5
+                    linewidth=1
                 )
             
             # Set x-axis limit with some padding

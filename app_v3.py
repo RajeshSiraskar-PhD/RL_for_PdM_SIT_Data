@@ -13,6 +13,11 @@ from rl_pdm_module import (
     plot_metrics, test_models_on_timeseries, Config
 )
 
+# Set parameters for REINFORCE agent
+learning_rate = Config.LEARNING_RATE
+gamma = Config.GAMMA
+model_file = Config.REINFORCE_MODEL
+
 # --- Page Configuration ---
 st.set_page_config(
     page_title="RL for Predictive Maintenance",
@@ -61,7 +66,7 @@ st.markdown("""
         /* Custom button styling */
         .stButton > button {
             width: 100%;
-            background-color: #FFFFFF;
+            background-color: #F0F2F6;
             border: 1px solid #B0C4DE;
         }
         
@@ -98,54 +103,21 @@ def train_reinforce_agent(data_file: str, episodes: int = 50, save_path: str = N
         agent = REINFORCE(
             policy=policy,
             env=env,
-            learning_rate=Config.LEARNING_RATE,
-            gamma=Config.GAMMA,
-            model_file=save_path if save_path else Config.REINFORCE_MODEL
+            learning_rate=learning_rate,
+            gamma=gamma,
+            model_file=save_path if save_path else model_file
         )
         
         # Train
         metrics = agent.learn(total_episodes=episodes)
 
-        st.toast(f"Agent trained. Model saved as: {Config.REINFORCE_MODEL}", icon="💾")
+        st.toast(f"Agent trained. Model saved as: {model_file}", icon="💾")
         return agent, metrics
     
     except Exception as e:
         st.error(f"Error training REINFORCE: {str(e)}")
         return None, None
 
-
-def simulate_training(model_name, plot_placeholder, progress_bar):
-    """Simulates training loop with live plotting."""
-    loss_values = []
-    reward_values = []
-    
-    steps = 50
-    for i in range(steps):
-        # Simulate calculations
-        time.sleep(0.05) 
-        loss = np.exp(-i/10) + np.random.normal(0, 0.05)
-        reward = np.log(i+1) + np.random.normal(0, 0.1)
-        
-        loss_values.append(loss)
-        reward_values.append(reward)
-        
-        # Update Progress
-        progress = (i + 1) / steps
-        progress_bar.progress(progress)
-        
-        # Update Plots in Right Column
-        with plot_placeholder.container():
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("Training Loss")
-                st.line_chart(loss_values, height=250)
-            with col2:
-                st.subheader("Cumulative Reward")
-                st.line_chart(reward_values, height=250)
-    
-    # Save "Dummy" Model
-    st.toast(f"Model saved as: {model_name}", icon="💾")
-    return {"loss": loss_values, "reward": reward_values}
 
 def generate_eval_metrics():
     """Generates dummy evaluation metrics."""
@@ -167,6 +139,32 @@ with st.sidebar:
     
     if train_file:
         st.success("Training file loaded.")
+    
+    # Hyperparameters
+    st.subheader("Hyperparameters")
+    
+    episodes = st.number_input(
+        "Episodes",
+        min_value=1,
+        value=Config.EPISODES,
+        step=10
+    )
+    
+    learning_rate = st.number_input(
+        "Learning Rate (α)",
+        min_value=1e-5,
+        max_value=1.0,
+        value=Config.LEARNING_RATE,
+        format="%.5f"
+    )
+    
+    gamma = st.number_input(
+        "Discount Factor (γ)",
+        min_value=0.0,
+        max_value=0.9999,
+        value=Config.GAMMA,
+        format="%.4f"
+    )
         
     # Button 1: Train REINFORCE
     if st.button('Train REINFORCE agent', use_container_width=True):
@@ -221,8 +219,8 @@ with main_container:
         # Train with live visualization - plots update automatically!
         agent, metrics = train_reinforce_agent(
             data_file=train_file,
-            episodes=Config.EPISODES,
-            save_path=Config.REINFORCE_MODEL
+            episodes=episodes,
+            save_path=model_file
         )
         
         st.success("✅ Training Complete. Model saved.")
