@@ -215,14 +215,17 @@ with main_container:
 
     # --- Training View ---
     elif st.session_state.view_mode == 'training_rf':
-        st.subheader("Training Progress: REINFORCE Agent")
-        st.markdown("Wait for the training loop to complete...")
-        plot_area = st.empty()
-
-        # $$$ Trigger the REINFORCE training function
-        train_reinforce_agent(data_file=train_file, episodes=Config.EPISODES, save_path=Config.REINFORCE_MODEL)
+        # st.subheader("Training Progress: REINFORCE Agent")
+        # st.markdown("Watch the model train in real-time...\n---")
         
-        st.success("Training Complete. Model 'RF' saved.")
+        # Train with live visualization - plots update automatically!
+        agent, metrics = train_reinforce_agent(
+            data_file=train_file,
+            episodes=Config.EPISODES,
+            save_path=Config.REINFORCE_MODEL
+        )
+        
+        st.success("✅ Training Complete. Model saved.")
 
     elif st.session_state.view_mode == 'training_rf_am':
         st.subheader("Training Progress: REINFORCE with Attention")

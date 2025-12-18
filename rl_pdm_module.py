@@ -62,7 +62,7 @@ class Config:
     
     # Training Configuration
     WEAR_THRESHOLD: float = 290.0               # Wear threshold
-    EPISODES: int = 50                          # Training episodes
+    EPISODES: int = 200                          # Training episodes
     LEARNING_RATE: float = 1e-2                 # Learning rate for optimizers
     GAMMA: float = 0.99                         # Discount factor
     SMOOTH_WINDOW: int = 50                     # Window size for smoothing plots
@@ -380,10 +380,18 @@ class REINFORCE:
         all_replacements = []
         all_margins = []
         
-        # Set up training progress bar
-        import streamlit as st
-        progress_text = "Training the REINFORCE model ..."
-        training_progress_bar = st.progress(0, text=progress_text)
+        # Try to import Streamlit for live visualization
+        try:
+            import streamlit as st
+            is_streamlit = True
+            # Create placeholder for live plots
+            plot_placeholder = st.empty()
+            progress_text = "Training the REINFORCE model ..."
+            training_progress_bar = st.progress(0, text=progress_text)
+        except (ImportError, RuntimeError):
+            is_streamlit = False
+            progress_text = None
+            training_progress_bar = None
         
         for episode in range(total_episodes):
             log_probs = []
@@ -439,17 +447,42 @@ class REINFORCE:
             policy_loss = torch.cat(policy_loss).sum()
             policy_loss.backward()
             self.optimizer.step()
-                        
-            if (episode + 1) % 10 == 0:
-                progress_text = f"Episode {episode + 1}/{total_episodes}, Reward: {sum(rewards):.2f}"
-                # print(progress_text)
-                # Initialize the progress bar
-                training_progress_bar.progress(episode+1, text=progress_text)  
+            
+            # Update progress and plots every 5 episodes or at the end
+            if (episode + 1) % 5 == 0 or (episode + 1) == total_episodes:
+                if is_streamlit:
+                    # Update progress bar
+                    progress_pct = (episode + 1) / total_episodes
+                    progress_text = f"Episode {episode + 1}/{total_episodes}, Reward: {sum(rewards):.2f}"
+                    training_progress_bar.progress(progress_pct, text=progress_text)
+                    
+                    # Update live plots
+                    current_metrics = {
+                        "rewards": all_rewards,
+                        "violations": all_violations,
+                        "replacements": all_replacements,
+                        "margins": all_margins
+                    }
+                    fig = plot_reinforce_training_live(
+                        current_metrics,
+                        episode=episode + 1,
+                        total_episodes=total_episodes,
+                        window=5
+                    )
+                    with plot_placeholder.container():
+                        st.pyplot(fig, use_container_width=True)
+                    
+                    plt.close(fig)  # Free memory
+                else:
+                    if (episode + 1) % 50 == 0:
+                        print(f"Episode {episode + 1}/{total_episodes}, Reward: {sum(rewards):.2f}")
         
         print("--- Training Complete ---")
-        # Clear the progress bar after completion (optional)
-        training_progress_bar.empty()
-        st.success("Training complete")
+        
+        # Clear the progress bar after completion
+        if is_streamlit:
+            training_progress_bar.empty()
+            st.success("🎉 Training complete!")
         
         # Save model if provided
         if self.model_file is not None:
@@ -462,8 +495,12 @@ class REINFORCE:
                     'output_dim': self.policy.net[-2].out_features
                 }, self.model_file)
                 print(f"Model saved to: {self.model_file}")
+                if is_streamlit:
+                    st.info(f"📁 Model saved to: {self.model_file}")
             except Exception as e:
                 print(f"Error saving model: {str(e)}")
+                if is_streamlit:
+                    st.error(f"Error saving model: {str(e)}")
         
         return {
             "rewards": all_rewards,
@@ -718,6 +755,144 @@ def plot_single_metrics(
         setup_subplot(ax, config['title'], 'Episode', config['ylabel'])
     
     plt.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
+
+
+def plot_reinforce_training_live(
+    metrics: Dict[str, List],
+    episode: int = 0,
+    total_episodes: int = 50,
+    window: int = 10
+):
+    """
+    Live plotting function for REINFORCE training visualization in Streamlit.
+    Dynamically plots metrics as training progresses.
+    
+    Args:
+        metrics (Dict): Current metrics dictionary with keys: rewards, violations, replacements, margins
+        episode (int): Current episode number
+        total_episodes (int): Total episodes to train
+        window (int): Smoothing window size
+    
+    Returns:
+        matplotlib.figure.Figure: Figure object for Streamlit display
+    """
+    
+    W, H = 14, 6 # 14, 8
+    FONTSIZE_SUPER = 12 #16
+    FONTSIZE_TITLE = 10 #11
+    FONTSIZE_LABEL = 9 # 9
+    FONTSIZE_TICK = 8  # 8
+    BACKGROUND_COLOR = '#fafafa'
+    LINE_WIDTH = 1.2
+    
+    def setup_subplot(ax, title, xlabel, ylabel):
+        ax.set_title(title, fontsize=FONTSIZE_TITLE) # , fontweight='bold')
+        ax.set_xlabel(xlabel, fontsize=FONTSIZE_LABEL)
+        ax.set_ylabel(ylabel, fontsize=FONTSIZE_LABEL)
+        ax.tick_params(labelsize=FONTSIZE_TICK)
+        ax.grid(True, linestyle='--', alpha=0.5, linewidth=0.7)
+        ax.set_facecolor(BACKGROUND_COLOR)
+    
+    # Create figure with subplots
+    fig, axs = plt.subplots(2, 2, figsize=(W, H))
+    fig.patch.set_facecolor('white')
+    
+    # Title with progress info
+    progress_pct = (episode / max(total_episodes, 1)) * 100
+    fig.suptitle(
+        f'REINFORCE Training Progress - Episode {episode}/{total_episodes} ({progress_pct:.1f}%)',
+        fontsize=FONTSIZE_SUPER,
+        # fontweight='bold',
+        color='#2C3E50'
+    )
+    
+    # Metrics configuration
+    metrics_config = [
+        {
+            'data': 'rewards',
+            'ax': axs[0, 0],
+            'title': 'Cumulative Reward per Episode',
+            'ylabel': 'Reward',
+            'color': '#1f77b4',
+            'smooth': True
+        },
+        {
+            'data': 'violations',
+            'ax': axs[0, 1],
+            'title': 'Violations per Episode',
+            'ylabel': 'Violation Count',
+            'color': '#d62728',
+            'smooth': False
+        },
+        {
+            'data': 'replacements',
+            'ax': axs[1, 0],
+            'title': 'Replacements per Episode',
+            'ylabel': 'Replacement Count',
+            'color': '#2ca02c',
+            'smooth': False
+        },
+        {
+            'data': 'margins',
+            'ax': axs[1, 1],
+            'title': 'Wear Margin at Replacement',
+            'ylabel': 'Margin Value',
+            'color': '#9467bd',
+            'smooth': True
+        }
+    ]
+    
+    # Plot each metric
+    for config in metrics_config:
+        ax = config['ax']
+        data_key = config['data']
+        data = metrics.get(data_key, [])
+        
+        if len(data) > 0:
+            # Apply smoothing if requested and enough data points
+            if config['smooth'] and len(data) > 1:
+                smooth_data = smooth(data, min(window, len(data)))
+            else:
+                smooth_data = np.array(data)
+            
+            # Plot data
+            episodes_range = np.arange(len(smooth_data))
+            ax.plot(
+                episodes_range,
+                smooth_data,
+                color=config['color'],
+                linewidth=LINE_WIDTH,
+                alpha=0.8,
+                # marker='o',
+                # markersize=4,
+                # markerfacecolor=config['color'],
+                # markeredgecolor='white',
+                # markeredgewidth=0.5
+            )
+            
+            # Add trend line if enough data
+            if len(data) > 3:
+                z = np.polyfit(episodes_range, smooth_data, 2)
+                p = np.poly1d(z)
+                ax.plot(
+                    episodes_range,
+                    p(episodes_range),
+                    color=config['color'],
+                    linestyle='--',
+                    alpha=0.3,
+                    linewidth=1.5
+                )
+            
+            # Set x-axis limit with some padding
+            ax.set_xlim(-1, max(len(data), total_episodes) + 1)
+        
+        # Setup subplot styling
+        setup_subplot(ax, config['title'], 'Episode', config['ylabel'])
+        ax.set_axisbelow(True)
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    
     return fig
 
 # ==========================================
