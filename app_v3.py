@@ -215,7 +215,7 @@ with main_container:
 
     # --- Training View ---
     elif st.session_state.view_mode == 'training_rf':
-        # st.subheader("Training Progress: REINFORCE Agent")
+        # st.subheader("Training a REINFORCE Agent")
         # st.markdown("Watch the model train in real-time...\n---")
         
         # Train with live visualization - plots update automatically!
