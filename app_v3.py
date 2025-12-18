@@ -39,6 +39,15 @@ st.markdown("""
         h1 {
             color: #2C3E50;
             font-size: 28px !important;
+            margin-top: -2rem !important;
+            margin-bottom: -0.5rem !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+        }
+        
+        hr {
+            margin-top: 0.5rem !important;
+            margin-bottom: 1rem !important;
         }
         h2 {
             color: #2C3E50;
@@ -71,10 +80,9 @@ if 'metrics' not in st.session_state:
 
 # --- Helper Functions for Dummy Logic ---
 
-def train_reinforce_example(data_file: str, episodes: int = 50, save_path: str = None):
+def train_reinforce_agent(data_file: str, episodes: int = 50, save_path: str = None):
     """
-    Example function to train REINFORCE agent.
-    Can be called from Streamlit UI.
+    Train REINFORCE agent.
     """
     try:
         # Create environment
@@ -97,7 +105,8 @@ def train_reinforce_example(data_file: str, episodes: int = 50, save_path: str =
         
         # Train
         metrics = agent.learn(total_episodes=episodes)
-        
+
+        st.toast(f"Agent trained. Model saved as: {Config.REINFORCE_MODEL}", icon="💾")
         return agent, metrics
     
     except Exception as e:
@@ -157,7 +166,7 @@ with st.sidebar:
     train_file = st.file_uploader("Select milling machine training data:", type=['csv', 'txt', 'json'], key="train_uploader")
     
     if train_file:
-        st.success("Training file loaded!")
+        st.success("Training file loaded.")
         
     # Button 1: Train REINFORCE
     if st.button('Train REINFORCE agent', use_container_width=True):
@@ -211,7 +220,7 @@ with main_container:
         plot_area = st.empty()
 
         # $$$ Trigger the REINFORCE training function
-        train_reinforce_example(data_file=train_file, episodes=Config.EPISODES, save_path=Config.REINFORCE_MODEL)
+        train_reinforce_agent(data_file=train_file, episodes=Config.EPISODES, save_path=Config.REINFORCE_MODEL)
         
         st.success("Training Complete. Model 'RF' saved.")
 
