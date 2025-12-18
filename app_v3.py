@@ -21,6 +21,7 @@ st.set_page_config(
 )
 
 # --- Custom CSS for Theming ---
+# #d2e3fa, #87CDEE #cad3db
 st.markdown("""
     <style>
         /* Main App Background (Right Column) - Very Light Grey */
@@ -30,13 +31,22 @@ st.markdown("""
         
         /* Sidebar Background (Left Column) - Pastel Blue */
         [data-testid="stSidebar"] {
-            background-color: #E6F3FF;
+            background-color: #a4d4eb;
             border-right: 1px solid #d1e7fbad;
         }
 
         /* Adjusting text colors */
-        h1, h2, h3 {
+        h1 {
             color: #2C3E50;
+            font-size: 28px !important;
+        }
+        h2 {
+            color: #2C3E50;
+            font-size: 22px !important;
+        }
+        h3 {
+            color: #2C3E50;
+            font-size: 18px !important;
         }
         
         /* Custom button styling */
@@ -44,6 +54,11 @@ st.markdown("""
             width: 100%;
             background-color: #FFFFFF;
             border: 1px solid #B0C4DE;
+        }
+        
+        .stButton > button:hover {
+            background-color: #e1e6eb;
+            border: 1px solid #A9C5E0;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -136,40 +151,29 @@ def generate_eval_metrics():
 # LEFT PANEL (SIDEBAR)
 # ==========================================
 with st.sidebar:
-    st.title('Reinforcement Learning for Predictive Maintenance')
-    
-    st.markdown("---")
-    
     # --- Section 1: Agent Training ---
-    st.header('1. Agent Training')
+    st.header('Agent Training')
     
     train_file = st.file_uploader("Select milling machine training data:", type=['csv', 'txt', 'json'], key="train_uploader")
     
     if train_file:
         st.success("Training file loaded!")
-    
-    st.write("###") # Spacer
-    
-    # Button 1: Train REINFORCE
-    if st.button('Train REINFORCE agent'):
-        st.session_state.view_mode = 'training_rf'
         
+    # Button 1: Train REINFORCE
+    if st.button('Train REINFORCE agent', use_container_width=True):
+        st.session_state.view_mode = 'training_rf'   
     # Progress Bar container (will be used by logic below)
     pbar_rf = st.empty()
 
-    st.write("###") # Spacer
-
     # Button 2: Train REINFORCE with Attention
-    if st.button('Train REINFORCE with Attention'):
+    if st.button('Train REINFORCE with Attention', use_container_width=True):
         st.session_state.view_mode = 'training_rf_am'
-    
     # Progress Bar container
-    pbar_rf_am = st.empty()
-    
+    pbar_rf_am = st.empty()   
     st.markdown("---")
 
     # --- Section 2: Agent Evaluation ---
-    st.header('2. Agent Evaluation')
+    st.header('Agent Evaluation')
 
     # UPDATED: Added File Picker for Evaluation
     eval_file = st.file_uploader("Select evaluation dataset:", type=['csv', 'txt', 'json'], key="eval_uploader")
@@ -177,18 +181,19 @@ with st.sidebar:
     if eval_file:
         st.success("Evaluation file loaded!")
 
-    st.write("###") # Spacer
-    
     model_options = ["RF", "RF_AM"]
     selected_model = st.selectbox("Select model to evaluate:", model_options)
     
-    if st.button('Evaluate Saved Models'):
+    if st.button('Evaluate Saved Models', use_container_width=True):
         st.session_state.view_mode = 'evaluation'
         st.session_state.eval_model = selected_model
 
 # ==========================================
 # RIGHT PANEL (MAIN AREA)
 # ==========================================
+
+st.title('Reinforcement Learning for Predictive Maintenance')
+st.markdown("---")
 
 # Container for the dynamic right column content
 main_container = st.container()
