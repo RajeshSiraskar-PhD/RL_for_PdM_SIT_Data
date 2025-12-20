@@ -62,8 +62,8 @@ class Config:
     
     # Training Configuration
     WEAR_THRESHOLD: float = 290.0               # Wear threshold
-    EPISODES: int = 200                          # Training episodes
-    LEARNING_RATE: float = 1e-2                 # Learning rate for optimizers
+    EPISODES: int = 40                          # Training episodes
+    LEARNING_RATE: float = 1e-1                 # Learning rate for optimizers
     GAMMA: float = 0.99                         # Discount factor
     SMOOTH_WINDOW: int = 50                     # Window size for smoothing plots
     
@@ -267,8 +267,8 @@ class AM_Env(MT_Env):
         
         # Compute attention weights from primal coefficients
         dual = np.asarray(self._kr_model.dual_coef_).reshape(-1, 1)
-        x_fit = np.asarray(self._kr_model.x_fit_)
-        coef = (x_fit.T @ dual).ravel()
+        X_fit = np.asarray(self._kr_model.X_fit_)
+        coef = (X_fit.T @ dual).ravel()
         
         attn = np.abs(coef)
         if attn.sum() == 0:
@@ -305,14 +305,80 @@ class AM_Env(MT_Env):
         model.fit(X, y)
         
         dual = np.asarray(model.dual_coef_).reshape(-1, 1)
-        x_fit = np.asarray(model.x_fit_)
-        coef = (x_fit.T @ dual).ravel()
+        X_fit = np.asarray(model.X_fit_)
+        coef = (X_fit.T @ dual).ravel()
         
         attn = np.abs(coef)
         if attn.sum() == 0:
             attn = np.ones_like(attn)
         attn = attn / (attn.sum() + 1e-12)
         self.attention_weights = attn.astype(np.float32)
+    
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict]:
+        """Execute one step using attention-weighted observations."""
+        if self.done:
+            obs = self.get_observation()
+            info = {
+                'violation': bool(self._get_tool_wear(self.current_idx) >= self.wear_threshold),
+                'replacement': False,
+                'margin': float(self._last_terminal_margin) if not np.isnan(self._last_terminal_margin) else float(self.wear_threshold - self._get_tool_wear(self.current_idx))
+            }
+            return obs, 0.0, True, False, info
+        
+        if action not in (0, 1):
+            raise ValueError("Invalid action.")
+        
+        tool_wear = self._get_tool_wear(self.current_idx)
+        reward = 0.0
+        info = {'violation': False, 'replacement': False, 'margin': np.nan}
+        
+        if action == 0:  # CONTINUE
+            if tool_wear >= self.wear_threshold:
+                reward = -self.r3
+                self.done = True
+                info['violation'] = True
+                info['margin'] = self._compute_margin(self.current_idx)
+                self._last_terminal_margin = info['margin']
+                obs = self.get_observation()
+                return obs, float(reward), True, False, info
+            else:
+                reward = self.r1
+                if self.current_idx + 1 < len(self.df):
+                    self.current_idx += 1
+                    obs = self.get_observation()
+                    return obs, float(reward), False, False, info
+                else:
+                    self.done = True
+                    info['margin'] = self._compute_margin(self.current_idx)
+                    self._last_terminal_margin = info['margin']
+                    obs = self.get_observation()
+                    return obs, float(reward), True, False, info
+        
+        else:  # REPLACE_TOOL (action == 1)
+            info['replacement'] = True
+            info['margin'] = self._compute_margin(self.current_idx)
+            if tool_wear >= self.wear_threshold:
+                reward = -self.r3
+                info['violation'] = True
+            else:
+                used_fraction = np.clip(tool_wear / self.wear_threshold, 0.0, 1.0)
+                unused_fraction = 1.0 - used_fraction
+                reward = self.r1 * used_fraction - self.r2 * unused_fraction
+                info['violation'] = False
+            self.done = True
+            self._last_terminal_margin = info['margin']
+            obs = self.get_observation()
+            return obs, float(reward), True, False, info
+    
+    def reset(self, *, seed=None, options=None):
+        """Reset the environment."""
+        super(MT_Env, self).reset(seed=seed)
+        self.current_idx = 0
+        self.done = False
+        self._last_terminal_margin = np.nan
+        obs = self.get_observation()
+        info = {'violation': False, 'replacement': False, 'margin': np.nan}
+        return obs, info
 
 # ==========================================
 # NEURAL NETWORK POLICY
@@ -521,14 +587,19 @@ class MetricsCallback(BaseCallback):
         self.violations = []
         self.replacements = []
         self.margins = []
+        self.episode_reward = 0.0
     
     def _on_step(self) -> bool:
+        # Accumulate reward from current step
+        self.episode_reward += self.locals.get('rewards', [0])[0]
+        
         if self.locals['dones'][0]:
             info = self.locals['infos'][0]
-            self.rewards.append(info['episode']['r'])
+            self.rewards.append(self.episode_reward)
             self.violations.append(1 if info.get('violation') else 0)
             self.replacements.append(1 if info.get('replacement') else 0)
             self.margins.append(info.get('margin', np.nan))
+            self.episode_reward = 0.0
         return True
 
 
@@ -539,9 +610,21 @@ def train_ppo(
     gamma: float = Config.GAMMA,
     model_file: str = None
 ) -> Dict[str, List]:
-    """Train a PPO agent and collect metrics."""
+    """Train a PPO agent and collect metrics with live visualization."""
     print("--- Training PPO ---")
     callback = MetricsCallback()
+    
+    # Try to import Streamlit for live visualization
+    try:
+        import streamlit as st
+        is_streamlit = True
+        plot_placeholder = st.empty()
+        progress_text = "Training the PPO model ..."
+        training_progress_bar = st.progress(0, text=progress_text)
+    except (ImportError, RuntimeError):
+        is_streamlit = False
+        progress_text = None
+        training_progress_bar = None
     
     model = PPO("MlpPolicy", env, verbose=0, learning_rate=learning_rate, gamma=gamma)
     
@@ -557,11 +640,44 @@ def train_ppo(
         
         if terminated or truncated:
             ep_count += 1
-            if (ep_count) % 50 == 0:
-                print(f"Episode {ep_count}/{total_episodes}")
+            
+            # Update progress and plots every 5 episodes or at the end
+            if (ep_count) % 5 == 0 or (ep_count) == total_episodes:
+                if is_streamlit:
+                    # Update progress bar
+                    progress_pct = ep_count / total_episodes
+                    progress_text = f"Episode {ep_count}/{total_episodes}, Reward: {callback.episode_reward:.2f}"
+                    training_progress_bar.progress(progress_pct, text=progress_text)
+                    
+                    # Update live plots
+                    current_metrics = {
+                        "rewards": callback.rewards,
+                        "violations": callback.violations,
+                        "replacements": callback.replacements,
+                        "margins": callback.margins
+                    }
+                    fig = plot_training_live(
+                        current_metrics,
+                        episode=ep_count,
+                        total_episodes=total_episodes,
+                        agent_name="PPO",
+                        window=5
+                    )
+                    with plot_placeholder.container():
+                        st.pyplot(fig, use_container_width=True)
+                    
+                    plt.close(fig)  # Free memory
+                else:
+                    if (ep_count) % 50 == 0:
+                        print(f"Episode {ep_count}/{total_episodes}, Reward: {callback.episode_reward:.2f}")
+            
             obs, _ = env.reset()
     
     print("--- Training Complete ---")
+    
+    # Clear the progress bar after completion
+    if is_streamlit:
+        training_progress_bar.empty()
     
     if model_file is not None:
         try:
@@ -758,20 +874,22 @@ def plot_single_metrics(
     return fig
 
 
-def plot_reinforce_training_live(
+def plot_training_live(
     metrics: Dict[str, List],
     episode: int = 0,
     total_episodes: int = 50,
+    agent_name: str = "Agent",
     window: int = 10
 ):
     """
-    Live plotting function for REINFORCE training visualization in Streamlit.
-    Dynamically plots metrics as training progresses.
+    Generic live plotting function for training visualization in Streamlit.
+    Dynamically plots metrics as training progresses for any agent type.
     
     Args:
         metrics (Dict): Current metrics dictionary with keys: rewards, violations, replacements, margins
         episode (int): Current episode number
         total_episodes (int): Total episodes to train
+        agent_name (str): Name of the agent being trained (e.g., 'REINFORCE', 'PPO', 'REINFORCE_AM')
         window (int): Smoothing window size
     
     Returns:
@@ -801,7 +919,7 @@ def plot_reinforce_training_live(
     # Title with progress info
     progress_pct = (episode / max(total_episodes, 1)) * 100
     fig.suptitle(
-        f'REINFORCE Training Progress - Episode {episode}/{total_episodes} ({progress_pct:.1f}%)',
+        f'{agent_name} Training Progress - Episode {episode}/{total_episodes} ({progress_pct:.1f}%)',
         fontsize=FONTSIZE_SUPER,
         # fontweight='bold',
         color='#2C3E50'
@@ -898,6 +1016,26 @@ def plot_reinforce_training_live(
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     
     return fig
+
+
+# Keep old function name for backward compatibility
+def plot_reinforce_training_live(
+    metrics: Dict[str, List],
+    episode: int = 0,
+    total_episodes: int = 50,
+    window: int = 10
+):
+    """
+    Deprecated: Use plot_training_live() instead.
+    Live plotting function for REINFORCE training visualization in Streamlit.
+    """
+    return plot_training_live(
+        metrics=metrics,
+        episode=episode,
+        total_episodes=total_episodes,
+        agent_name="REINFORCE",
+        window=window
+    )
 
 # ==========================================
 # EVALUATION FUNCTIONS

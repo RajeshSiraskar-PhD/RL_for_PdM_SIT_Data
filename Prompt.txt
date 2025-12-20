@@ -3,17 +3,20 @@ Gemini Pro 2.5 for code
 for Stable Baselines3 (SB3) 
 
 
-Features: time, Vib_Spindle, Vib_Table, Sound_Spindle, Sound_table, X_Load_Cell, Y_Load_Cell, Z_Load_Cell, Current, Spindle_Speed, Feed_Rate, Depth_of_Cut
+
+We are creating a reinforcement learning agent for the predictive maintenance of a milling machine. We replace the milling tool if its tool wear approaches the threshold 'WEAR_THRESHOLD'. Sensor data is provided as a .csv file like the one attached - shows the tool going through its "remaining useful life" journey i.e. from the time it is installed to crossing the wear threshold.
+
+Features: Time, Vib_Spindle, Vib_Table, Sound_Spindle, Sound_table, X_Load_Cell, Y_Load_Cell, Z_Load_Cell, Current
 
 
-We are creating a reinforcement learning agent for the predictive maintenance of a milling machine. We replace the milling tool if its tool wear approaches the threshold 'WEAR_THRESHOLD'. Sensor data is provided as a .csv file like the one attached - shows the tool going through its life - from installed to crossing the wear threshold.
-
-Keep global variables for easy changes: DATA_FILE, Rewards R1, R2 and R3, WEAR_THRESHOLD (290), EPISODES (500), SMOOTH_WINDOW and any others. 
-
-Task-1:
-Create a custom environment 'MT_Env' based on OpenAI's Gymnasium. It is initiated using the data file, wear threshold and three reward parameters. The .csv attached file provides the state values through which the tool goes. 
+Your first task is simple - create a custom environment 'MT_Env_V2' based on OpenAI's Gymnasium. It is initiated using the sensor data file, wear threshold and three reward parameters. 
 
 The agent is to be trained to provide actions: REPLACE_TOOL or CONTINUE. We must optimize tool life usage, but not cross WEAR THRESHOLD as it will result in poor quality work product. Use R1, R2, R3 for reward/penalty parameters that can be passed to the environment.
+
+Keep global variables for easy changes: DATA_FILE, Rewards R1, R2 and R3, WEAR_THRESHOLD (290), EPISODES (500). 
+
+
+Create a 
 
 Task-2:
 Create a REINFORCE algo implementation using Stable Baselines3 format - ensure that is state of the art and can beat a plain vanila PPO.
@@ -26,4 +29,18 @@ Plot 4 curves comparing REINFORCE and PPO: (1) learning curves (avg. episode rew
 
 If all this works - we are going to add Attention Mechanism! We will create another environment variant that uses the 8 sensor readings (Vib_Spindle to Current) and create attention weights and pass them along as State information and see if the REINFORCE performs even better than PPO working on the State * WITHOUT * attention weights!
 	
-	
+
+UX enhancements
+
+Read carefully, multiple instructions: 
+1. Add a button (in app_v3.py) 'Train PPO agent' (after 'Train REINFORCE'), use the same data file for training and use the train_ppo() function from 'rl_pdm_module.py'.
+
+2. Store training metrics for all three Training modes. This will allow comparison of the plots later. Also ensure averages for all four metrics is stored - so they can be compared later
+
+3. Add a 'Compare agents' button - this should allow display of superimposed plots for the REINFORCE, PPO and Attention training. Enable this button when metrics for atleast  2 of these options are available. Also show neatly - the average metrics comparison.
+
+4. Modify the training plot function 'plot_reinforce_training_live' (in rl_pdm_module.py, ) to be generic,
+call it 'plot_training_live' - so that you can cater to plotting live agent training for all
+three models i.e. REINFORCE, PPO and REINFORCE with Attention
+
+5. When displaying the live training plots - ensure they are 'stored' in a 'Training Log'. A button in left pane should allow one to see the training plots via collapsable sections in the main area
