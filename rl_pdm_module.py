@@ -1,15 +1,11 @@
-"""
-Reinforcement Learning for Predictive Maintenance - Standalone Module
-Version: 2.0 | Date: 14-Dec-2025
-
-This module contains all the necessary classes, functions, and utilities for:
-- Training REINFORCE, PPO, and REINFORCE+Attention agents
-- Evaluating trained models on test data
-- Plotting training metrics and results
-- Managing milling machine environments
-
-Can be imported into Streamlit or other applications.
-"""
+# ------------------------------------------------------------------------------------
+# Reinforcement Learning for Predictive Maintenance
+# Author: Rajesh Siraskar
+# V.1.0: 22-Dec-2025
+# - Training REINFORCE, PPO, and REINFORCE+Attention agents
+# - Plotting training metrics and results
+#- To-do: Evaluating trained models on test data
+# ------------------------------------------------------------------------------------
 
 import warnings
 import logging
@@ -60,15 +56,16 @@ class Config:
     R2_REPLACE: float = 5.0                     # Penalty weight for unused life
     R3_VIOLATION: float = 50.0                  # Large penalty for crossing threshold
     AMR: float = 5e-2                           # Advantage Mixing Ratio for Attention
+    VIOLATION_MARGIN: float = 1.075             # Violation margin - default 5% over threshold
     
     # Training Configuration
     WEAR_THRESHOLD: float = 290.0               # Wear threshold
-    EPISODES: int = 20                          # Training episodes
-    LEARNING_RATE: float = 1e-1                 # Learning rate for optimizers
+    EPISODES: int = 200                          # Training episodes
+    LEARNING_RATE: float = 1e-3                 # Learning rate for optimizers
     GAMMA: float = 0.99                         # Discount factor
     SMOOTH_WINDOW: int = 50                     # Window size for smoothing plots
-    PLOT_SMOOTHING_FACTOR: int = 20             # Smoothing window for sensor data visualization
-    TRAINING_PLOT_MA_WINDOW: int = 10           # Moving average window for training plot trends
+    PLOT_SMOOTHING_FACTOR: int = int(EPISODES/10)             # Smoothing window for sensor data visualization
+    TRAINING_PLOT_MA_WINDOW: int = int(EPISODES/10)           # Moving average window for training plot trends
     
     # Model Saving
     SAVE_MODEL: bool = True
@@ -168,7 +165,7 @@ class MT_Env(gym.Env):
         if self.done:
             obs = self._get_observation(min(self.current_idx, len(self.df)-1))
             info = {
-                'violation': bool(self._get_tool_wear(self.current_idx) >= self.wear_threshold),
+                'violation': bool(self._get_tool_wear(self.current_idx) > self.wear_threshold * Config.VIOLATION_MARGIN),
                 'replacement': False,
                 'margin': float(self._last_terminal_margin) if not np.isnan(self._last_terminal_margin) else float(self.wear_threshold - self._get_tool_wear(self.current_idx))
             }
@@ -182,7 +179,7 @@ class MT_Env(gym.Env):
         info = {'violation': False, 'replacement': False, 'margin': np.nan}
         
         if action == 0:  # CONTINUE
-            if tool_wear >= self.wear_threshold:
+            if tool_wear > self.wear_threshold * Config.VIOLATION_MARGIN:
                 reward = -self.r3
                 self.done = True
                 info['violation'] = True
@@ -206,7 +203,7 @@ class MT_Env(gym.Env):
         else:  # REPLACE_TOOL (action == 1)
             info['replacement'] = True
             info['margin'] = self._compute_margin(self.current_idx)
-            if tool_wear >= self.wear_threshold:
+            if tool_wear > self.wear_threshold * Config.VIOLATION_MARGIN:
                 reward = -self.r3
                 info['violation'] = True
             else:
@@ -322,7 +319,7 @@ class AM_Env(MT_Env):
         if self.done:
             obs = self.get_observation()
             info = {
-                'violation': bool(self._get_tool_wear(self.current_idx) >= self.wear_threshold),
+                'violation': bool(self._get_tool_wear(self.current_idx) > self.wear_threshold * Config.VIOLATION_MARGIN),
                 'replacement': False,
                 'margin': float(self._last_terminal_margin) if not np.isnan(self._last_terminal_margin) else float(self.wear_threshold - self._get_tool_wear(self.current_idx))
             }
@@ -336,7 +333,7 @@ class AM_Env(MT_Env):
         info = {'violation': False, 'replacement': False, 'margin': np.nan}
         
         if action == 0:  # CONTINUE
-            if tool_wear >= self.wear_threshold:
+            if tool_wear > self.wear_threshold * Config.VIOLATION_MARGIN:
                 reward = -self.r3
                 self.done = True
                 info['violation'] = True
@@ -360,7 +357,7 @@ class AM_Env(MT_Env):
         else:  # REPLACE_TOOL (action == 1)
             info['replacement'] = True
             info['margin'] = self._compute_margin(self.current_idx)
-            if tool_wear >= self.wear_threshold:
+            if tool_wear > self.wear_threshold * Config.VIOLATION_MARGIN:
                 reward = -self.r3
                 info['violation'] = True
             else:
@@ -632,27 +629,41 @@ def train_ppo(
         progress_text = None
         training_progress_bar = None
     
-    model = PPO("MlpPolicy", env, verbose=0, learning_rate=learning_rate, gamma=gamma)
+    # Create model with PPO defaults
+    model = PPO("MlpPolicy", env, verbose=0, learning_rate=learning_rate, gamma=gamma, n_steps=256)
     
     obs, _ = env.reset()
     ep_count = 0
+    total_timesteps = 0
+    timesteps_per_update = 256  # PPO's n_steps
+    
     while ep_count < total_episodes:
         action, _states = model.predict(obs, deterministic=False)
         obs, reward, terminated, truncated, info = env.step(action)
+        total_timesteps += 1
         
-        callback.model = model
-        callback.locals = {'dones': [terminated or truncated], 'infos': [info]}
-        callback._on_step()
-        
+        # Track metrics
+        callback.episode_reward += reward
         if terminated or truncated:
+            callback.rewards.append(callback.episode_reward)
+            callback.violations.append(1 if info.get('violation') else 0)
+            callback.replacements.append(1 if info.get('replacement') else 0)
+            callback.margins.append(info.get('margin', np.nan))
+            callback.episode_reward = 0.0
             ep_count += 1
+            obs, _ = env.reset()
+        
+        # Train PPO when we've accumulated enough timesteps
+        if total_timesteps % timesteps_per_update == 0 or ep_count >= total_episodes:
+            model.learn(total_timesteps=timesteps_per_update)
             
             # Update progress and plots every 5 episodes or at the end
-            if (ep_count) % 5 == 0 or (ep_count) == total_episodes:
+            if (ep_count) % 5 == 0 or (ep_count) >= total_episodes:
                 if is_streamlit:
                     # Update progress bar
-                    progress_pct = ep_count / total_episodes
-                    progress_text = f"Episode {ep_count}/{total_episodes}, Reward: {callback.episode_reward:.2f}"
+                    progress_pct = min(ep_count / total_episodes, 1.0)
+                    current_reward = callback.rewards[-1] if callback.rewards else 0.0
+                    progress_text = f"Episode {ep_count}/{total_episodes}, Reward: {current_reward:.2f}"
                     training_progress_bar.progress(progress_pct, text=progress_text)
                     
                     # Update live plots
@@ -674,24 +685,28 @@ def train_ppo(
                     
                     plt.close(fig)  # Free memory
                 else:
-                    if (ep_count) % 50 == 0:
-                        print(f"Episode {ep_count}/{total_episodes}, Reward: {callback.episode_reward:.2f}")
-            
-            obs, _ = env.reset()
+                    if (ep_count) % 5 == 0 or ep_count >= total_episodes:
+                        current_reward = callback.rewards[-1] if callback.rewards else 0.0
+                        print(f"Episode {ep_count}/{total_episodes}, Reward: {current_reward:.2f}")
     
     print("--- Training Complete ---")
     
     # Clear the progress bar after completion
     if is_streamlit:
         training_progress_bar.empty()
+        st.success("🎉 PPO Training complete!")
     
     if model_file is not None:
         try:
             os.makedirs(os.path.dirname(model_file), exist_ok=True)
             model.save(model_file)
             print(f"PPO model saved to: {model_file}")
+            if is_streamlit:
+                st.info(f"📁 PPO model saved to: {model_file}")
         except Exception as e:
             print(f"Error saving PPO model: {str(e)}")
+            if is_streamlit:
+                st.error(f"Error saving PPO model: {str(e)}")
     
     return {
         "rewards": callback.rewards,
@@ -932,10 +947,23 @@ def plot_training_live(
     
     # Title with progress info
     progress_pct = (episode / max(total_episodes, 1)) * 100
+    
+    # 1. Left align the full title & 2. Make the main model bold and the rest small/plain
     fig.suptitle(
-        f'{display_agent_name} Training Progress - Episode {episode}/{total_episodes} ({progress_pct:.1f}%)',
+        f'{display_agent_name} Agent Training',
+        x=0.035, y=0.98,
+        ha='left',
         fontsize=FONTSIZE_SUPER,
-        # fontweight='bold',
+        fontweight='bold',
+        color='#2C3E50'
+    )
+    
+    fig.text(
+        0.98, 0.96,
+        f"Training progress - episode {episode}/{total_episodes} ({progress_pct:.1f}%)",
+        ha='right',
+        fontsize=FONTSIZE_TITLE,
+        fontweight='normal',
         color='#2C3E50'
     )
     
@@ -1008,8 +1036,9 @@ def plot_training_live(
             )
             
             # Add trend line (moving average) if enough data
-            if config['trend'] and len(data) > Config.TRAINING_PLOT_MA_WINDOW:
-                ma_data = pd.Series(smooth_data).rolling(window=Config.TRAINING_PLOT_MA_WINDOW, min_periods=1).mean().to_numpy()
+            trend_window = max(int(total_episodes * 0.1), 5)
+            if config['trend'] and len(data) > trend_window:
+                ma_data = pd.Series(smooth_data).rolling(window=trend_window, min_periods=1).mean().to_numpy()
                 ax.plot(
                     episodes_range,
                     ma_data,
@@ -1017,7 +1046,7 @@ def plot_training_live(
                     linestyle='--',
                     alpha=0.3,
                     linewidth=2,
-                    label=f'Trend (MA-{Config.TRAINING_PLOT_MA_WINDOW})'
+                    label=f'Trend (MA-{trend_window})'
                 )
             
             # Set x-axis limit with some padding

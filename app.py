@@ -1,5 +1,7 @@
 # ------------------------------------------------------------------------------------
 # Streamlit based user-interface for RL-based Predictive Maintenance
+# Author: Rajesh Siraskar
+# V.1.0: 22-Dec-2025
 # ------------------------------------------------------------------------------------
 
 import streamlit as st
@@ -368,7 +370,7 @@ with st.sidebar:
 # RIGHT PANEL (MAIN AREA)
 # ==========================================
 
-st.markdown("<h1 style='color: #0066b2;'>Reinforcement Learning for Predictive Maintenance</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='color: #0066b2;'>Reinforcement Learning for Predictive Maintenance V.2.0</h1>", unsafe_allow_html=True)
 st.markdown("---")
 
 # Container for the dynamic right column content
