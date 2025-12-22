@@ -10,7 +10,8 @@ import matplotlib.pyplot as plt
 
 from rl_pdm_module import (
     train_ppo, REINFORCE, PolicyNetwork, MT_Env, AM_Env,
-    plot_metrics, test_models_on_timeseries, Config, plot_training_live, average_metrics
+    plot_metrics, test_models_on_timeseries, Config, plot_training_live, average_metrics,
+    plot_sensor_data_with_wear
 )
 
 # Set parameters for REINFORCE agent
@@ -101,6 +102,10 @@ if 'averaged_metrics' not in st.session_state:
         'PPO': None,
         'REINFORCE_AM': None
     }
+if 'sensor_data_plot' not in st.session_state:
+    st.session_state.sensor_data_plot = None
+if 'uploaded_data' not in st.session_state:
+    st.session_state.uploaded_data = None
 
 # --- Helper Functions for Dummy Logic ---
 
@@ -259,6 +264,19 @@ with st.sidebar:
     
     if train_file:
         st.toast("Training file loaded.", icon="✅")
+        # Auto-generate sensor data visualization
+        if st.session_state.uploaded_data is None or st.session_state.uploaded_data.name != train_file.name:
+            try:
+                df = pd.read_csv(train_file)
+                st.session_state.uploaded_data = train_file
+                st.session_state.sensor_data_plot = plot_sensor_data_with_wear(
+                    df=df,
+                    data_file_name=train_file.name,
+                    smoothing=Config.PLOT_SMOOTHING_FACTOR
+                )
+                st.toast("Sensor data visualization generated!", icon="📊")
+            except Exception as e:
+                st.warning(f"Could not generate sensor visualization: {str(e)}")
     
     # Hyperparameters
     st.subheader("Hyperparameters")
@@ -355,9 +373,15 @@ main_container = st.container()
 
 with main_container:
     if st.session_state.view_mode == 'idle':
-        st.info("<< Please select a training file and start training an agent from the sidebar.")
-        st.markdown("### System Status")
-        st.write("Ready to process milling machine telemetry data.")
+        if st.session_state.sensor_data_plot is not None:
+            st.markdown("### Uploaded Sensor Data Visualization")
+            st.pyplot(st.session_state.sensor_data_plot)
+            st.markdown("---")
+            st.info("<< Training file loaded. Select an agent and start training from the sidebar.")
+        else:
+            st.info("<< Please select a training file and start training an agent from the sidebar.")
+            st.markdown("### System Status")
+            st.write("Ready to process milling machine telemetry data.")
 
     # --- Training View ---
     elif st.session_state.view_mode == 'training_rf':
@@ -501,6 +525,12 @@ with main_container:
     # --- Training Logs View ---
     elif st.session_state.view_mode == 'training_logs':
         st.subheader("Training Logs & History")
+        
+        # Display sensor data visualization as FIRST plot
+        if st.session_state.sensor_data_plot is not None:
+            with st.expander("📊 Input Sensor Data Visualization", expanded=True):
+                st.pyplot(st.session_state.sensor_data_plot)
+                st.markdown("---")
         
         agents_with_logs = [agent for agent in ['REINFORCE', 'PPO', 'REINFORCE_AM'] 
                             if st.session_state.training_log[agent]]

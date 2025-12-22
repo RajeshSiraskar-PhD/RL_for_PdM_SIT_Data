@@ -29,6 +29,7 @@ from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.monitor import Monitor
 
 import matplotlib.pyplot as plt
+import seaborn as sns
 from typing import Dict, List, Tuple, Any
 from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score
 from sklearn.kernel_ridge import KernelRidge
@@ -66,6 +67,7 @@ class Config:
     LEARNING_RATE: float = 1e-1                 # Learning rate for optimizers
     GAMMA: float = 0.99                         # Discount factor
     SMOOTH_WINDOW: int = 50                     # Window size for smoothing plots
+    PLOT_SMOOTHING_FACTOR: int = 20             # Smoothing window for sensor data visualization
     
     # Model Saving
     SAVE_MODEL: bool = True
@@ -1185,3 +1187,95 @@ def test_models_on_timeseries(
     print(df_out.round(4))
     
     return df_out
+
+
+# ==========================================
+# SENSOR DATA VISUALIZATION
+# ==========================================
+def plot_sensor_data_with_wear(df, data_file_name, smoothing=None):
+    """
+    Creates a 3x3 multi-plot of sensor data with tool wear visualization.
+    
+    Args:
+        df (pd.DataFrame): DataFrame containing sensor data with columns:
+                          Time, Vib_Spindle, Vib_Table, Current, X_Load_Cell,
+                          Y_Load_Cell, Z_Load_Cell, Sound_Spindle, Sound_table, tool_wear
+        data_file_name (str): Name of the data file for the title
+        smoothing (int, optional): Rolling window size for smoothing. If 0 or None, no smoothing applied.
+    
+    Returns:
+        matplotlib.figure.Figure: The generated figure object
+    """
+    features_to_plot = {
+        (0, 0): 'Vib_Spindle',
+        (0, 1): 'Vib_Table',
+        (0, 2): 'Current',
+        (1, 0): 'X_Load_Cell',
+        (1, 1): 'Y_Load_Cell',
+        (1, 2): 'Z_Load_Cell',
+        (2, 0): 'Sound_Spindle',
+        (2, 1): 'Sound_table',
+        (2, 2): 'tool_wear'  # Added tool wear as the last plot
+    }
+
+    # Set a pastel color palette using seaborn
+    pastel_palette = sns.color_palette("pastel", 5)
+
+    # Assign colors for each group of features
+    color_group1_vib = pastel_palette[0]      
+    color_group1_current = pastel_palette[1]   
+    color_group2_load = pastel_palette[2]      
+    color_group3_sound = pastel_palette[3]     
+
+    # Create the 3x3 multi-plot figure and axes
+    fig, axes = plt.subplots(3, 3, figsize=(18, 15))
+
+    # Determine the main title
+    main_title = f'Sensor Data File: {data_file_name} | Raw Features and Tool Wear' 
+    if smoothing is not None and smoothing > 0:
+        main_title = f'{main_title} (Smoothed with window={smoothing})'
+    else:
+        main_title = main_title + ' (No Smoothing)'
+    fig.suptitle(main_title, fontsize=20, y=0.95)
+
+    # Iterate through features and plot
+    for (row, col), feature_name in features_to_plot.items():
+        ax = axes[row, col]
+
+        # Set light grey background for tool wear plot
+        if feature_name == 'tool_wear':
+            ax.set_facecolor('#f5f5f5')  # Light grey background
+
+        # Apply smoothing if specified, but not for tool_wear
+        if smoothing is not None and smoothing > 0 and feature_name != 'tool_wear':
+            data_to_plot = df[feature_name].rolling(window=smoothing, min_periods=1).mean()
+            y_label_suffix = ' (Smoothed)'
+        else:
+            data_to_plot = df[feature_name]
+            y_label_suffix = ''
+
+        # Determine plot color
+        if feature_name == 'tool_wear':
+            plot_color = "#676778"  # Very dark grey for tool wear
+        elif feature_name in ['Vib_Spindle', 'Vib_Table']:
+            plot_color = color_group1_vib
+        elif feature_name == 'Current':
+            plot_color = color_group1_current
+        elif feature_name in ['X_Load_Cell', 'Y_Load_Cell', 'Z_Load_Cell']:
+            plot_color = color_group2_load
+        elif feature_name in ['Sound_Spindle', 'Sound_table']:
+            plot_color = color_group3_sound
+        else:
+            plot_color = 'gray'
+
+        # Plot the data
+        ax.plot(df['Time'], data_to_plot, color=plot_color, linewidth=3)
+        ax.set_title(feature_name, fontsize=14)
+        ax.set_xlabel('Time', fontsize=12)
+        ax.set_ylabel(f'Value{y_label_suffix}', fontsize=12)
+        ax.grid(True, linestyle='--', alpha=0.7)
+
+    # Adjust layout
+    plt.tight_layout(rect=[0, 0.03, 1, 0.93])
+    
+    return fig
