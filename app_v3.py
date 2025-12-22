@@ -129,7 +129,8 @@ def train_reinforce_agent(data_file: str, episodes: int = 50, save_path: str = N
             env=env,
             learning_rate=learning_rate,
             gamma=gamma,
-            model_file=save_path if save_path else model_file
+            model_file=save_path if save_path else model_file,
+            agent_name="REINFORCE"
         )
         
         # Train
@@ -149,7 +150,7 @@ def train_reinforce_agent(data_file: str, episodes: int = 50, save_path: str = N
             'episodes': episodes
         })
 
-        st.toast(f"Agent trained. Model saved as: {model_file}", icon="💾")
+        st.toast(f"Agent trained. Model saved as: {model_file}", icon="💾", duration=3)
         return agent, metrics
     
     except Exception as e:
@@ -188,7 +189,7 @@ def train_ppo_agent(data_file: str, episodes: int = 50, save_path: str = None):
             'episodes': episodes
         })
 
-        st.toast(f"PPO agent trained. Model saved as: {ppo_model_file}", icon="💾")
+        st.toast(f"PPO agent trained. Model saved as: {ppo_model_file}", icon="💾", duration=3)
         return metrics
     
     except Exception as e:
@@ -216,7 +217,8 @@ def train_reinforce_am_agent(data_file: str, episodes: int = 50, save_path: str 
             env=env,
             learning_rate=learning_rate,
             gamma=gamma,
-            model_file=save_path if save_path else reinforce_am_model_file
+            model_file=save_path if save_path else reinforce_am_model_file,
+            agent_name="REINFORCE_AM"
         )
         
         # Train
@@ -236,7 +238,7 @@ def train_reinforce_am_agent(data_file: str, episodes: int = 50, save_path: str 
             'episodes': episodes
         })
 
-        st.toast(f"REINFORCE+AM agent trained. Model saved as: {reinforce_am_model_file}", icon="💾")
+        st.toast(f"REINFORCE with Attention agent trained. Model saved as: {reinforce_am_model_file}", icon="💾", duration=3)
         return agent, metrics
     
     except Exception as e:
@@ -260,10 +262,10 @@ with st.sidebar:
     # --- Section 1: Agent Training ---
     st.header('Agent Training')
     
-    train_file = st.file_uploader("Select milling machine training data:", type=['csv', 'txt', 'json'], key="train_uploader")
+    train_file = st.file_uploader("Select milling machine data:", type=['csv', 'txt', 'json'], key="train_uploader")
     
     if train_file:
-        st.toast("Training file loaded.", icon="✅")
+        st.toast("Training file loaded.", icon="✅", duration=3)
         # Auto-generate sensor data visualization
         if st.session_state.uploaded_data is None or st.session_state.uploaded_data.name != train_file.name:
             try:
@@ -274,7 +276,7 @@ with st.sidebar:
                     data_file_name=train_file.name,
                     smoothing=Config.PLOT_SMOOTHING_FACTOR
                 )
-                st.toast("Sensor data visualization generated!", icon="📊")
+                st.toast("Sensor data visualization generated!", icon="📊", duration=3)
             except Exception as e:
                 st.warning(f"Could not generate sensor visualization: {str(e)}")
     
@@ -304,17 +306,17 @@ with st.sidebar:
         format="%.4f"
     )
         
-    # Button 1: Train REINFORCE
-    if st.button('Train REINFORCE agent', use_container_width=True):
-        st.session_state.view_mode = 'training_rf'   
-    # Progress Bar container (will be used by logic below)
-    pbar_rf = st.empty()
-
-    # Button 2: Train PPO
+    # Button 1: Train PPO
     if st.button('Train PPO agent', use_container_width=True):
         st.session_state.view_mode = 'training_ppo'
     # Progress Bar container
     pbar_ppo = st.empty()
+
+    # Button 2: Train REINFORCE
+    if st.button('Train REINFORCE agent', use_container_width=True):
+        st.session_state.view_mode = 'training_rf'   
+    # Progress Bar container (will be used by logic below)
+    pbar_rf = st.empty()
 
     # Button 3: Train REINFORCE with Attention
     if st.button('Train REINFORCE with Attention', use_container_width=True):
@@ -352,7 +354,7 @@ with st.sidebar:
     eval_file = st.file_uploader("Select evaluation dataset:", type=['csv', 'txt', 'json'], key="eval_uploader")
 
     if eval_file:
-        st.toast("Evaluation file loaded!", icon="✅")
+        st.toast("Evaluation file loaded!", icon="✅", duration=3)
 
     model_options = ["RF", "RF_AM"]
     selected_model = st.selectbox("Select model to evaluate:", model_options)
@@ -385,7 +387,7 @@ with main_container:
 
     # --- Training View ---
     elif st.session_state.view_mode == 'training_rf':
-        st.subheader("Training REINFORCE Agent")
+        # st.subheader("Training REINFORCE Agent")
         
         # Train with live visualization
         agent, metrics = train_reinforce_agent(
@@ -394,10 +396,10 @@ with main_container:
             save_path=model_file
         )
         
-        st.toast("✅ REINFORCE Training Complete. Model saved.", icon="💾")
+        st.toast("✅ REINFORCE Training Complete. Model saved.", icon="💾", duration=3)
 
     elif st.session_state.view_mode == 'training_ppo':
-        st.subheader("Training PPO Agent")
+        # st.subheader("Training PPO Agent")
         
         # Train PPO agent
         metrics = train_ppo_agent(
@@ -406,7 +408,7 @@ with main_container:
             save_path=ppo_model_file
         )
         
-        st.toast("✅ PPO Training Complete. Model saved.", icon="💾")
+        st.toast("✅ PPO Training Complete. Model saved.", icon="💾", duration=3)
 
     elif st.session_state.view_mode == 'training_rf_am':
         st.subheader("Training REINFORCE with Attention Agent")
@@ -418,20 +420,27 @@ with main_container:
             save_path=reinforce_am_model_file
         )
         
-        st.toast("✅ REINFORCE+Attention Training Complete. Model saved.", icon="💾")
+        st.toast("✅ REINFORCE+Attention Training Complete. Model saved.", icon="💾", duration=3)
     
     # --- Comparison View ---
     elif st.session_state.view_mode == 'compare':
         # st.subheader("Agent Performance Comparison")
         
-        # Get available metrics
+        # Get available metrics (ordered: PPO, REINFORCE, REINFORCE_AM)
         available_agents = []
-        if st.session_state.metrics['REINFORCE'] is not None:
-            available_agents.append('REINFORCE')
         if st.session_state.metrics['PPO'] is not None:
             available_agents.append('PPO')
+        if st.session_state.metrics['REINFORCE'] is not None:
+            available_agents.append('REINFORCE')
         if st.session_state.metrics['REINFORCE_AM'] is not None:
             available_agents.append('REINFORCE_AM')
+        
+        # Display names mapping
+        agent_display_names = {
+            'REINFORCE': 'REINFORCE',
+            'PPO': 'PPO',
+            'REINFORCE_AM': 'REINFORCE with Attention'
+        }
         
         if len(available_agents) >= 2:
             # Display average metrics comparison with user-friendly names
@@ -447,21 +456,24 @@ with main_container:
             }
             
             # Create comparison columns
-            cols = st.columns(len(available_agents) + 1)
+            cols = st.columns(len(available_agents) + 1, gap="small")
             cols[0].markdown("**Metric**")
             for i, agent in enumerate(available_agents):
-                cols[i+1].markdown(f"**{agent}**")
+                display_name = agent_display_names[agent]
+                cols[i+1].markdown(f"<div style='text-align: right; margin: 0; padding: 0;'><b>{display_name}</b></div>", unsafe_allow_html=True)
             
             # Display each metric row
             for metric_key, metric_display in metric_names.items():
-                cols = st.columns(len(available_agents) + 1)
+                cols = st.columns(len(available_agents) + 1, gap="small")
                 cols[0].markdown(metric_display)
                 for i, agent in enumerate(available_agents):
                     value = st.session_state.averaged_metrics[agent].get(metric_key, np.nan)
                     if np.isnan(value):
-                        cols[i+1].markdown("N/A")
+                        cols[i+1].markdown("<div style='text-align: right; margin: 0; padding: 0;'>N/A</div>", unsafe_allow_html=True)
                     else:
-                        cols[i+1].markdown(f"{value:.4f}")
+                        cols[i+1].markdown(f"<div style='text-align: right; margin: 0; padding: 0;'>{value:.3f}</div>", unsafe_allow_html=True)
+                # Add darker horizontal line after each row
+                st.markdown("<hr style='margin: 4px 0; padding: 0; border: none; border-top: 1px solid rgba(150, 150, 150, 0.5);'>", unsafe_allow_html=True)
             
             st.markdown("---")
             
@@ -566,9 +578,9 @@ with main_container:
         
         # Check if file is uploaded (optional check for the dummy logic)
         if eval_file:
-            st.toast(f"Evaluated on: {eval_file.name}", icon="✅")
+            st.toast(f"Evaluated on: {eval_file.name}", icon="✅", duration=3)
         else:
-            st.toast("Using default validation set", icon="ℹ️")
+            st.toast("Using default validation set", icon="ℹ️", duration=3)
         
         # 1. Statistical Results (Top Area)
         metrics = generate_eval_metrics()

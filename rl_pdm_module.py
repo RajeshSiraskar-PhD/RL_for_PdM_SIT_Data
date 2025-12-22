@@ -63,11 +63,12 @@ class Config:
     
     # Training Configuration
     WEAR_THRESHOLD: float = 290.0               # Wear threshold
-    EPISODES: int = 40                          # Training episodes
+    EPISODES: int = 20                          # Training episodes
     LEARNING_RATE: float = 1e-1                 # Learning rate for optimizers
     GAMMA: float = 0.99                         # Discount factor
     SMOOTH_WINDOW: int = 50                     # Window size for smoothing plots
     PLOT_SMOOTHING_FACTOR: int = 20             # Smoothing window for sensor data visualization
+    TRAINING_PLOT_MA_WINDOW: int = 10           # Moving average window for training plot trends
     
     # Model Saving
     SAVE_MODEL: bool = True
@@ -421,13 +422,15 @@ class REINFORCE:
         env: gym.Env,
         learning_rate: float = 0.001,
         gamma: float = 0.99,
-        model_file: str = None
+        model_file: str = None,
+        agent_name: str = "REINFORCE"
     ):
         self.env = env
         self.policy = policy
         self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
         self.gamma = gamma
-        self.model_name = "REINFORCE"
+        self.model_name = agent_name
+        self.agent_name = agent_name
         self.model_file = model_file
     
     def predict(self, obs: np.ndarray) -> int:
@@ -531,10 +534,11 @@ class REINFORCE:
                         "replacements": all_replacements,
                         "margins": all_margins
                     }
-                    fig = plot_reinforce_training_live(
+                    fig = plot_training_live(
                         current_metrics,
                         episode=episode + 1,
                         total_episodes=total_episodes,
+                        agent_name=self.agent_name,
                         window=5
                     )
                     with plot_placeholder.container():
@@ -918,10 +922,18 @@ def plot_training_live(
     fig, axs = plt.subplots(2, 2, figsize=(W, H))
     fig.patch.set_facecolor('white')
     
+    # Display names mapping for friendly titles
+    agent_display_names = {
+        'REINFORCE': 'REINFORCE',
+        'PPO': 'PPO',
+        'REINFORCE_AM': 'REINFORCE with Attention'
+    }
+    display_agent_name = agent_display_names.get(agent_name, agent_name)
+    
     # Title with progress info
     progress_pct = (episode / max(total_episodes, 1)) * 100
     fig.suptitle(
-        f'{agent_name} Training Progress - Episode {episode}/{total_episodes} ({progress_pct:.1f}%)',
+        f'{display_agent_name} Training Progress - Episode {episode}/{total_episodes} ({progress_pct:.1f}%)',
         fontsize=FONTSIZE_SUPER,
         # fontweight='bold',
         color='#2C3E50'
@@ -995,17 +1007,17 @@ def plot_training_live(
                 # markeredgewidth=0.5
             )
             
-            # Add trend line if enough data
-            if config['trend'] and len(data) > 3:
-                z = np.polyfit(episodes_range, smooth_data, 2)
-                p = np.poly1d(z)
+            # Add trend line (moving average) if enough data
+            if config['trend'] and len(data) > Config.TRAINING_PLOT_MA_WINDOW:
+                ma_data = pd.Series(smooth_data).rolling(window=Config.TRAINING_PLOT_MA_WINDOW, min_periods=1).mean().to_numpy()
                 ax.plot(
                     episodes_range,
-                    p(episodes_range),
+                    ma_data,
                     color=config['color'],
                     linestyle='--',
                     alpha=0.3,
-                    linewidth=1
+                    linewidth=2,
+                    label=f'Trend (MA-{Config.TRAINING_PLOT_MA_WINDOW})'
                 )
             
             # Set x-axis limit with some padding
